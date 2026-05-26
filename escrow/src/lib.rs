@@ -191,6 +191,9 @@ pub enum DataKey {
     /// When set at [`LiquifactEscrow::init`], caps distinct investor addresses that may contribute.
     /// Absent ⇒ unlimited. Checked against [`DataKey::UniqueFunderCount`] on each new investor.
     MaxUniqueInvestorsCap,
+    /// Optional immutable per-investor cap on total principal credited to a single address.
+    /// Absent ⇒ unlimited. Checked against [`DataKey::InvestorContribution`] on every deposit.
+    MaxPerInvestorCap,
     /// Count of distinct investor addresses that have a non-zero [`DataKey::InvestorContribution`].
     /// Written as `0` at init; incremented once per new investor in `fund_impl`.
     UniqueFunderCount,
@@ -545,6 +548,7 @@ impl LiquifactEscrow {
         yield_tiers: Option<Vec<YieldTier>>,
         min_contribution: Option<i128>,
         max_unique_investors: Option<u32>,
+        max_per_investor: Option<i128>,
     ) -> InvoiceEscrow {
         admin.require_auth();
 
@@ -611,6 +615,13 @@ impl LiquifactEscrow {
         env.storage()
             .instance()
             .set(&DataKey::UniqueFunderCount, &0u32);
+
+        if let Some(cap) = max_per_investor {
+            assert!(cap > 0, "max_per_investor must be positive when configured");
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxPerInvestorCap, &cap);
+        }
 
         if let Some(cap) = max_unique_investors {
             assert!(
@@ -766,6 +777,14 @@ impl LiquifactEscrow {
         env.storage()
             .instance()
             .get(&DataKey::MaxUniqueInvestorsCap)
+    }
+
+    /// Optional cap on total principal for a single investor address.
+    /// Absent ⇒ unlimited. Enforced on every deposit.
+    pub fn get_max_per_investor_cap(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxPerInvestorCap)
     }
 
     /// Distinct funders counted so far (each address counted once when it first receives principal).
@@ -1152,6 +1171,20 @@ impl LiquifactEscrow {
 
         let contribution_key = DataKey::InvestorContribution(investor.clone());
         let prev: i128 = env.storage().instance().get(&contribution_key).unwrap_or(0);
+        let new_contribution: i128 = prev
+            .checked_add(amount)
+            .expect("investor contribution overflow");
+
+        if let Some(cap) = env
+            .storage()
+            .instance()
+            .get::<DataKey, i128>(&DataKey::MaxPerInvestorCap)
+        {
+            assert!(
+                new_contribution <= cap,
+                "investor contribution exceeds max_per_investor cap"
+            );
+        }
 
         // Hoist UniqueFunderCount read: used for both the cap assertion (below) and the
         // increment write (after contribution is recorded). A single read covers both uses,
@@ -1244,7 +1277,7 @@ impl LiquifactEscrow {
 
         env.storage()
             .instance()
-            .set(&contribution_key, &(prev + amount));
+            .set(&contribution_key, &new_contribution);
 
         if prev == 0 {
             // Use the hoisted cur_funder_count; no second storage read needed.
