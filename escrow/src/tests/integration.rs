@@ -58,7 +58,7 @@ fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None
+        &None,
     );
 
     // Funding starts normally.
@@ -400,7 +400,7 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
         &Some(yield_tiers),
         &None,
         &None,
-        &None
+        &None,
     );
 
     let investor_base = Address::generate(&env);
@@ -526,7 +526,7 @@ fn test_collateral_record_is_metadata_only_and_does_not_invoke_token_contract() 
         &None,
         &None,
         &None,
-        &None
+        &None,
     );
 
     let commitment = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
@@ -755,7 +755,7 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None
+        &None,
     );
 
     // Initial funding succeeds while hold is off.

@@ -164,7 +164,6 @@ pub const INSTANCE_TTL_MIN_EXTENSION_SECS: u64 = 60 * 60; // 1h
 /// Extending persistent allowlist TTL reduces the risk of silent allowlist disablement.
 pub const PERSISTENT_TTL_MIN_EXTENSION_SECS: u64 = 60 * 60; // 1h
 
-
 // --- Storage keys ---
 
 #[contracttype]
@@ -899,9 +898,7 @@ impl LiquifactEscrow {
     /// Optional cap on total principal for a single investor address.
     /// Absent ⇒ unlimited. Enforced on every deposit.
     pub fn get_max_per_investor_cap(env: Env) -> Option<i128> {
-        env.storage()
-            .instance()
-            .get(&DataKey::MaxPerInvestorCap)
+        env.storage().instance().get(&DataKey::MaxPerInvestorCap)
     }
 
     /// Distinct funders counted so far (each address counted once when it first receives principal).
@@ -1816,7 +1813,6 @@ impl LiquifactEscrow {
     pub fn transfer_admin(env: Env, new_admin: Address) -> InvoiceEscrow {
         // env.clone(): env is used again after this call for storage set and publish.
         let mut escrow = Self::get_escrow(env.clone());
-
 
         escrow.admin.require_auth();
 
