@@ -20,7 +20,9 @@ fn test_fund_and_settle() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     let funded = client.fund(&investor, &TARGET);
     assert_eq!(funded.funded_amount, TARGET);
     assert_eq!(funded.status, 1);
@@ -46,7 +48,9 @@ fn test_fund_partial_then_full() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     let partial = client.fund(&investor, &(TARGET / 2));
     assert_eq!(partial.status, 0);
     assert_eq!(partial.funded_amount, TARGET / 2);
@@ -107,7 +111,9 @@ fn test_single_investor_contribution_tracked() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&investor, &(30_000_000_000i128));
     let contribution = client.get_contribution(&investor);
     assert_eq!(contribution, 30_000_000_000i128);
@@ -142,7 +148,9 @@ fn test_repeated_funding_accumulates_contribution() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&investor, &(20_000_000_000i128));
     client.fund(&investor, &(30_000_000_000i128));
     assert_eq!(client.get_contribution(&investor), 50_000_000_000i128);
@@ -168,7 +176,9 @@ fn test_funding_amount_accumulation_overflow_panics() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund(&investor_a, &(i128::MAX - 1));
     client.fund(&investor_b, &2i128);
@@ -192,7 +202,9 @@ fn test_funding_amount_overflow_does_not_mutate_state() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund(&investor, &(i128::MAX - 1));
     let before = client.get_escrow();
@@ -228,7 +240,9 @@ fn test_fund_with_commitment_overflow_panics() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund(&investor_a, &(i128::MAX - 1));
     client.fund_with_commitment(&investor_b, &2i128, &0u64);
@@ -253,7 +267,9 @@ fn test_fund_with_commitment_overflow_does_not_mutate_state() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund(&investor_a, &(i128::MAX - 1));
     let before = client.get_escrow();
@@ -300,7 +316,9 @@ fn test_investor_contribution_overflow_panics_even_if_state_is_inconsistent() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     env.as_contract(&contract_id, || {
         // Force the contribution near i128::MAX while keeping funded_amount small.
@@ -343,7 +361,9 @@ fn test_investor_contribution_overflow_does_not_mutate_state() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     env.as_contract(&contract_id, || {
         env.storage().instance().set(
@@ -388,7 +408,9 @@ fn test_multiple_investors_tracked_independently() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&inv_a, &(20_000_000_000i128));
     client.fund(&inv_b, &(50_000_000_000i128));
     client.fund(&inv_c, &(30_000_000_000i128));
@@ -421,7 +443,9 @@ fn test_contributions_sum_equals_funded_amount() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&inv_a, &(20_000_000_000i128));
     client.fund(&inv_b, &(50_000_000_000i128));
     client.fund(&inv_c, &(30_000_000_000i128));
@@ -449,7 +473,9 @@ fn test_cost_baseline_fund_partial() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&investor, &(10_000_000_000i128));
 }
 
@@ -471,7 +497,9 @@ fn test_cost_baseline_fund_full() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&investor, &TARGET);
 }
 
@@ -493,7 +521,9 @@ fn test_cost_baseline_fund_overshoot() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&investor, &(150_000_000_000i128));
     assert_eq!(client.get_escrow().status, 1);
 }
@@ -516,7 +546,9 @@ fn test_cost_baseline_fund_two_step_completion() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&investor, &(TARGET / 2));
     client.fund(&investor, &(TARGET / 2));
     assert_eq!(client.get_escrow().status, 1);
@@ -544,7 +576,9 @@ fn test_funding_close_snapshot_captures_overfunded_total_once() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     assert_eq!(client.get_funding_close_snapshot(), None);
     client.fund(&inv, &(TARGET + 50_000_000_000i128));
     let snap = client.get_funding_close_snapshot().expect("snapshot");
@@ -577,7 +611,9 @@ fn test_funding_snapshot_immutable_across_second_fund_after_funded() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&a, &(TARGET / 2));
     assert_eq!(client.get_funding_close_snapshot(), None);
     client.fund(&b, &(TARGET / 2));
@@ -610,7 +646,9 @@ fn test_pro_rata_weight_ratio_from_snapshot() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&a, &(20_000_000_000i128));
     client.fund(&b, &(80_000_000_000i128));
     let snap = client.get_funding_close_snapshot().unwrap();
@@ -651,7 +689,9 @@ fn test_tiered_yield_and_follow_on_fund() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund_with_commitment(&inv, &5_000i128, &200u64);
     assert_eq!(client.get_investor_yield_bps(&inv), 900);
     assert_eq!(client.get_investor_claim_not_before(&inv), 200);
@@ -688,7 +728,9 @@ fn test_tier_selection_edges_base_vs_high_bucket() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund_with_commitment(&i_short, &10_000i128, &40u64);
     assert_eq!(client.get_investor_yield_bps(&i_short), 800);
     client.fund_with_commitment(&i_long, &10_000i128, &50u64);
@@ -723,7 +765,9 @@ fn test_fund_with_commitment_twice_panics() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund_with_commitment(&inv, &5_000i128, &10u64);
     client.fund_with_commitment(&inv, &5_000i128, &10u64);
 }
@@ -751,7 +795,9 @@ fn test_fund_then_fund_with_commitment_panics() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     client.fund(&inv, &5_000i128);
     client.fund_with_commitment(&inv, &5_000i128, &10u64);
 }
@@ -788,7 +834,9 @@ fn test_tier_selection_ladder() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     let inv_base = Address::generate(&env);
     let inv_tier1 = Address::generate(&env);
@@ -841,7 +889,9 @@ fn test_fund_with_commitment_zero_lock_behaves_as_fund() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund_with_commitment(&inv, &5_000i128, &0u64);
     assert_eq!(client.get_investor_yield_bps(&inv), 800);
@@ -873,7 +923,9 @@ fn test_commitment_claim_time_allows_u64_max_boundary() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund_with_commitment(&investor, &100i128, &5u64);
 
@@ -906,7 +958,9 @@ fn test_commitment_claim_time_overflow_panics() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund_with_commitment(&investor, &100i128, &6u64);
 }
@@ -936,7 +990,9 @@ fn test_commitment_claim_time_overflow_does_not_record_position() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     let overflowed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.fund_with_commitment(&investor, &100i128, &6u64);
@@ -979,7 +1035,9 @@ fn test_init_bad_tier_order_panics() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 }
 
 #[test]
@@ -1009,7 +1067,9 @@ fn test_init_tier_yield_below_base_panics() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 }
 
 #[test]
@@ -1035,7 +1095,9 @@ fn test_differential_funding_target_eq_exact_cross() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     let escrow = client.fund(&inv, &t);
     assert_eq!(escrow.funded_amount, t);
     assert_eq!(escrow.status, 1);
@@ -1066,7 +1128,9 @@ fn test_ledger_sequence_recorded_in_snapshot_with_tick() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     let seq = env.ledger().sequence();
     client.fund(&inv, &1_000i128);
     let snap = client.get_funding_close_snapshot().unwrap();
@@ -1095,7 +1159,9 @@ fn test_get_funding_close_snapshot_absent_before_any_funding() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     assert_eq!(
         client.get_funding_close_snapshot(),
         None,
@@ -1126,7 +1192,9 @@ fn test_get_funding_close_snapshot_present_after_funding_completes() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     // Partial fund — snapshot still absent.
     client.fund(&inv, &(TARGET / 2));
     assert_eq!(
@@ -1168,7 +1236,9 @@ fn test_get_funding_close_snapshot_immutable_after_set() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     // Fund exactly to target — snapshot is written here.
     client.fund(&inv, &TARGET);
     let snap_at_close = client
@@ -1204,7 +1274,9 @@ fn test_unique_funder_count_initialized_to_zero() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     assert_eq!(client.get_unique_funder_count(), 0);
 }
 
@@ -1226,7 +1298,9 @@ fn test_unique_funder_count_increments_on_first_investor() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     assert_eq!(client.get_unique_funder_count(), 0);
     client.fund(&investor, &(TARGET / 2));
     assert_eq!(client.get_unique_funder_count(), 1);
@@ -1254,7 +1328,9 @@ fn test_unique_funder_count_increments_for_distinct_investors() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     assert_eq!(client.get_unique_funder_count(), 0);
 
     client.fund(&inv_a, &(TARGET / 3));
@@ -1297,7 +1373,9 @@ fn test_unique_funder_count_with_fund_with_commitment() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     assert_eq!(client.get_unique_funder_count(), 0);
 
@@ -1327,7 +1405,9 @@ fn test_max_unique_investors_cap_none_allows_unlimited() {
         &None,
         &None,
         &None, // No cap set
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Should be able to add many investors when no cap is set
     for i in 0..10 {
@@ -1355,7 +1435,9 @@ fn test_max_unique_investors_cap_enforced_at_limit() {
         &None,
         &None,
         &Some(3u32), // Cap of 3 investors
-        &None, &None);
+        &None,
+        &None,
+    );
 
     assert_eq!(client.get_max_unique_investors_cap(), Some(3u32));
 
@@ -1396,7 +1478,9 @@ fn test_max_unique_investors_cap_blocks_excess_investors() {
         &None,
         &None,
         &Some(2u32), // Cap of 2 investors
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Add 2 investors
     let inv1 = Address::generate(&env);
@@ -1438,7 +1522,9 @@ fn test_max_unique_investors_cap_blocks_fund_with_commitment() {
         &Some(tiers),
         &None,
         &Some(1u32), // Cap of 1 investor
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // First investor succeeds
     let inv1 = Address::generate(&env);
@@ -1468,7 +1554,9 @@ fn test_re_funding_same_address_doesnt_count_against_cap() {
         &None,
         &None,
         &Some(1u32), // Cap of 1 investor
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // First fund should succeed
     client.fund(&investor, &(TARGET / 3));
@@ -1502,7 +1590,9 @@ fn test_zero_contribution_then_non_zero_contribution_counts_as_unique_investor()
         &None,
         &None,
         &Some(2u32), // Cap of 2 investors
-        &None, &None);
+        &None,
+        &None,
+    );
 
     assert_eq!(client.get_unique_funder_count(), 0);
     assert_eq!(client.get_contribution(&investor), 0);
@@ -1533,7 +1623,9 @@ fn test_cap_validation_at_init_positive_value_required() {
         &None,
         &None,
         &Some(0u32), // Invalid: zero cap
-        &None, &None);
+        &None,
+        &None,
+    );
 }
 
 #[test]
@@ -1554,7 +1646,9 @@ fn test_init_panics_for_zero_cap() {
         &None,
         &None,
         &Some(0u32), // Invalid: zero cap
-        &None, &None);
+        &None,
+        &None,
+    );
 }
 
 #[test]
@@ -1575,7 +1669,9 @@ fn test_cap_edge_case_exact_limit_reached() {
         &None,
         &None,
         &Some(5u32), // Cap of 5 investors
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Add exactly 5 investors - should all succeed
     for i in 0..5 {
@@ -1610,7 +1706,9 @@ fn test_cap_edge_case_exactly_one_over_limit_panics() {
         &None,
         &None,
         &Some(5u32), // Cap of 5 investors
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Add exactly 5 investors
     for _i in 0..5 {
@@ -1641,7 +1739,9 @@ fn test_cap_with_min_contribution_floor_interaction() {
         &None,
         &Some(1_000i128), // Min contribution floor
         &Some(3u32),      // Cap of 3 investors
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Should respect both cap and floor
     let inv1 = Address::generate(&env);
@@ -1680,7 +1780,9 @@ fn test_cap_blocks_even_with_large_contribution() {
         &None,
         &None,
         &Some(1u32), // Cap of 1 investor
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // First investor can fund large amount
     let inv1 = Address::generate(&env);
@@ -1714,7 +1816,9 @@ fn test_cap_panic_message_quality() {
         &None,
         &None,
         &Some(1u32),
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Add first investor
     let inv1 = Address::generate(&env);
@@ -1751,7 +1855,9 @@ fn init_with_token<'a>(
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
     (token, treasury)
 }
 
@@ -2017,7 +2123,9 @@ fn test_commitment_claim_lock_preserved_after_follow_on_fund() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Set ledger timestamp to a known value so claim_nb is deterministic.
     env.ledger().with_mut(|l| l.timestamp = 1_000_000u64);
@@ -2081,7 +2189,9 @@ fn test_commitment_invariant_across_multiple_follow_on_funds() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     env.ledger().with_mut(|l| l.timestamp = 2_000_000u64);
 
@@ -2140,7 +2250,9 @@ fn test_commitment_zero_lock_follow_on_fund_no_claim_gate() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Zero lock → base yield only, no claim gate.
     client.fund_with_commitment(&inv, &4_000i128, &0u64);
@@ -2197,7 +2309,9 @@ fn test_second_fund_with_commitment_panics_without_tier_table() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund_with_commitment(&inv, &3_000i128, &0u64);
     // Second call must trap.
@@ -2237,7 +2351,9 @@ fn test_fund_first_then_commitment_second_panics() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // First leg via fund() → establishes base-yield position.
     client.fund(&inv, &3_000i128);
@@ -2277,7 +2393,9 @@ fn test_fund_first_deposit_sets_base_yield_and_no_claim_gate() {
         &Some(tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     client.fund(&inv, &5_000i128);
     assert_eq!(

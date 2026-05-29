@@ -58,7 +58,9 @@ fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Funding starts normally.
     let first_leg = TARGET / 2;
@@ -173,7 +175,9 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
         &None, // No yield tiers for simplicity
         &None, // No min contribution floor
         &None, // No max investors cap
-        &None, &None);
+        &None,
+        &None,
+    );
 
     let initial_escrow = client.get_escrow();
     assert_eq!(
@@ -399,7 +403,9 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
         &Some(yield_tiers),
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     let investor_base = Address::generate(&env);
     let investor_tier1 = Address::generate(&env);
@@ -524,7 +530,9 @@ fn test_collateral_record_is_metadata_only_and_does_not_invoke_token_contract() 
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     let commitment = client.record_sme_collateral_commitment(&symbol_short!("USDC"), &5_000i128);
     assert_eq!(commitment.asset, symbol_short!("USDC"));
@@ -752,7 +760,9 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
-        &None, &None);
+        &None,
+        &None,
+    );
 
     // Initial funding succeeds while hold is off.
     let open_state = client.fund(&investor, &4_000i128);
