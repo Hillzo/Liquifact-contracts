@@ -106,8 +106,8 @@ fn test_init_unauthorized_panics() {
             &None,
             &None,
             &None,
-        &None,
-    );
+            &None,
+        );
     }));
     assert!(result.is_err(), "Expected panic without auth");
 }
