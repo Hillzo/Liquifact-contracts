@@ -1312,10 +1312,8 @@ impl LiquifactEscrow {
         if !active && Self::legal_hold_active(&env) {
             let delay = Self::get_legal_hold_clear_delay(env.clone());
             if delay > 0 {
-                let clearable_at: Option<u64> = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::LegalHoldClearableAt);
+                let clearable_at: Option<u64> =
+                    env.storage().instance().get(&DataKey::LegalHoldClearableAt);
                 ensure(
                     &env,
                     clearable_at.is_some(),
@@ -1330,7 +1328,9 @@ impl LiquifactEscrow {
             }
         }
 
-        env.storage().instance().remove(&DataKey::LegalHoldClearableAt);
+        env.storage()
+            .instance()
+            .remove(&DataKey::LegalHoldClearableAt);
 
         env.storage().instance().set(&DataKey::LegalHold, &active);
 

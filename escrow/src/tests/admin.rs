@@ -326,7 +326,9 @@ fn test_read_model_summary_includes_optional_admin_fields() {
         &None,
         &Some(100i128),
         &Some(7u32),
-        &Some(10_000i128), &None);
+        &Some(10_000i128),
+        &None,
+    );
 
     let summary = client.get_escrow_summary();
 

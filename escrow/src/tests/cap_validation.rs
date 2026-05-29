@@ -198,7 +198,9 @@ fn test_max_per_investor_cap_blocks_excess_principal() {
         &None,
         &None,
         &Some(2u32),
-        &Some(50_000_000_000i128), &None);
+        &Some(50_000_000_000i128),
+        &None,
+    );
 
     let inv1 = Address::generate(&env);
     client.fund(&inv1, &30_000_000_000i128);
@@ -230,7 +232,9 @@ fn test_init_zero_max_per_investor_panics() {
         &None,
         &None,
         &Some(2u32),
-        &Some(0i128), &None);
+        &Some(0i128),
+        &None,
+    );
 }
 
 #[test]
