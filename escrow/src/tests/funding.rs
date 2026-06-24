@@ -330,6 +330,7 @@ fn test_per_investor_contribution_uses_persistent_storage() {
         &None,
         &None,
         &None,
+        &None,
     );
     client.fund(&investor, &500i128);
 
@@ -955,6 +956,8 @@ fn test_yield_tier_emitted_in_event() {
         &Some(tiers),
         &None,
         &None,
+        &None,
+        &None,
     );
 
     let inv = Address::generate(&env);
@@ -1027,6 +1030,8 @@ fn test_yield_tier_emitted_no_tiers() {
         &None,
         &None,
         &None,
+        &None,
+        &None,
     );
 
     let inv = Address::generate(&env);
@@ -1082,6 +1087,8 @@ fn test_yield_tier_emitted_between_tiers() {
         &None,
         &tre,
         &Some(tiers),
+        &None,
+        &None,
         &None,
         &None,
     );

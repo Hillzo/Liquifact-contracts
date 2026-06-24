@@ -751,6 +751,15 @@ pub struct InvestorAllowlistChanged {
     pub allowed: u32,
 }
 
+#[contractevent]
+pub struct ContractUpgraded {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub new_wasm_hash: BytesN<32>,
+}
+
 #[contract]
 pub struct LiquifactEscrow;
 
@@ -1872,6 +1881,44 @@ impl LiquifactEscrow {
             // and return NEW_VERSION before reaching this typed error.
             fail(&env, EscrowError::NoMigrationPath)
         }
+    }
+
+    /// Replaces the deployed contract WASM with the binary identified by `new_wasm_hash`.
+    ///
+    /// # Authorization
+    /// Only the current escrow admin may call this function. Authorization is verified
+    /// before any deployer call. Unauthorised callers will cause the transaction to revert.
+    ///
+    /// # State
+    /// No persistent storage keys, escrow records, or balances are modified.
+    /// Only the contract code is replaced. `SCHEMA_VERSION` is not incremented here;
+    /// run `migrate()` after upgrading if schema changes accompany the new WASM.
+    ///
+    /// # Interaction with ADR-007
+    /// This function does not add, remove, or rename any `DataKey` variants.
+    /// It is safe to upgrade to a WASM that adds new `DataKey` variants (additive-key
+    /// policy) without calling `migrate()`, but removing or reordering variants in the
+    /// new WASM would corrupt stored data. Operators must verify additive-only changes
+    /// before upgrading.
+    ///
+    /// # Risks
+    /// Deploying an incompatible WASM will corrupt stored state. Test thoroughly on
+    /// testnet before upgrading production contracts.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        // Auth first — matches migrate() ordering
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        // Emit event before the deployer call so the event is recorded even if
+        // the deployer call somehow reverts (defensive ordering)
+        ContractUpgraded {
+            name: symbol_short!("upgrade"),
+            invoice_id: escrow.invoice_id,
+            new_wasm_hash: new_wasm_hash.clone(),
+        }
+        .publish(&env);
+
+        // Replace contract WASM — no state is modified
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Record investor principal while the invoice is **open**. First deposit sets base
