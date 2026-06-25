@@ -94,6 +94,7 @@ Emitted when the SME finalizes the escrow after maturity.
 - `yield_bps` (i64)
 - `maturity` (u64)
 - `settled_at_ledger_timestamp` (u64) — the ledger timestamp when `settle` was called
+- `settle_pool` (i128) — realized settlement pool: `total_principal + floor(total_principal × yield_bps / 10_000)`. Computed from `FundingCloseSnapshot.total_principal` using the same checked arithmetic as `compute_investor_payout`. Zero on legacy escrows that pre-date the snapshot key.
 
 **Example (JSON Decoded):**
 ```json
@@ -103,7 +104,8 @@ Emitted when the SME finalizes the escrow after maturity.
     "funded_amount": "10000000000",
     "yield_bps": 500,
     "maturity": 1714184400,
-    "settled_at_ledger_timestamp": 1714184400
+    "settled_at_ledger_timestamp": 1714184400,
+    "settle_pool": "10500000000"
   }
 }
 ```

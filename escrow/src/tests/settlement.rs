@@ -21,11 +21,12 @@ use super::{
     default_init, deploy, deploy_with_id, free_addresses, install_stellar_asset_token, setup,
     MAX_DUST_SWEEP_AMOUNT, TARGET,
 };
-use crate::LiquifactEscrow;
+use crate::{EscrowSettled, LiquifactEscrow};
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Events, Ledger as _},
     token::StellarAssetClient,
-    Address, Env, String,
+    Address, Env, Event, String,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -45,7 +46,11 @@ fn fund_to_target(client: &super::LiquifactEscrowClient<'_>, env: &Env) -> Addre
 /// actually transfer them.  Returns `(client, sme, sac_admin_client)`.
 fn setup_funded_with_token<'a>(
     env: &'a Env,
-) -> (super::LiquifactEscrowClient<'a>, Address, StellarAssetClient<'a>) {
+) -> (
+    super::LiquifactEscrowClient<'a>,
+    Address,
+    StellarAssetClient<'a>,
+) {
     let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
     let token_id = sac.address();
     let sac_admin = StellarAssetClient::new(env, &token_id);
@@ -1660,4 +1665,147 @@ fn test_funding_blocked_after_partial_settle() {
 
     let late_investor = Address::generate(&env);
     client.fund(&late_investor, &1_000i128);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// `settle` — EscrowSettled.settle_pool field
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// settle_pool in EscrowSettled equals principal + floor(principal × yield_bps / 10_000).
+///
+/// Uses `default_init` which sets yield_bps=800 and TARGET=100_000_000_000.
+/// Expected coupon = 100_000_000_000 × 800 / 10_000 = 8_000_000_000.
+/// Expected settle_pool = 100_000_000_000 + 8_000_000_000 = 108_000_000_000.
+#[test]
+fn settle_event_settle_pool_equals_principal_plus_coupon() {
+    use soroban_sdk::testutils::Events as _;
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let (admin, sme) = free_addresses(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+    client.settle();
+
+    let invoice_id = soroban_sdk::String::from_str(&env, "INV001");
+    let invoice_sym = soroban_sdk::Symbol::new(&env, "INV001");
+    let expected_settle_pool: i128 = TARGET + TARGET * 800 / 10_000; // 108_000_000_000
+
+    let all = env.events().all();
+    let events = all.events();
+    let last = events.last().expect("settle must emit an event");
+    assert_eq!(
+        *last,
+        EscrowSettled {
+            name: symbol_short!("escrow_sd"),
+            invoice_id: invoice_sym.clone(),
+            funded_amount: TARGET,
+            yield_bps: 800i64,
+            maturity: 0u64,
+            settled_at_ledger_timestamp: env.ledger().timestamp(),
+            settle_pool: expected_settle_pool,
+        }
+        .to_xdr(&env, &contract_id)
+    );
+}
+
+/// When yield_bps is 0 the settle_pool must equal the funded principal exactly.
+#[test]
+fn settle_event_settle_pool_zero_yield() {
+    use soroban_sdk::testutils::Events as _;
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let (admin, sme) = free_addresses(&env);
+    let (token, treasury) = free_addresses(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV001"),
+        &sme,
+        &TARGET,
+        &0i64, // zero yield
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    fund_to_target(&client, &env);
+    client.settle();
+
+    let all = env.events().all();
+    let events = all.events();
+    let last = events.last().expect("settle must emit an event");
+    assert_eq!(
+        *last,
+        EscrowSettled {
+            name: symbol_short!("escrow_sd"),
+            invoice_id: soroban_sdk::Symbol::new(&env, "INV001"),
+            funded_amount: TARGET,
+            yield_bps: 0i64,
+            maturity: 0u64,
+            settled_at_ledger_timestamp: env.ledger().timestamp(),
+            settle_pool: TARGET, // coupon == 0, pool == principal
+        }
+        .to_xdr(&env, &contract_id)
+    );
+}
+
+/// Rounding floor: settle_pool must use integer floor division, not round-half-up.
+///
+/// With principal=10_001 and yield_bps=1 the exact coupon is 1.0001, floored to 1.
+/// settle_pool = 10_001 + 1 = 10_002.
+#[test]
+fn settle_event_settle_pool_rounding_floor() {
+    use soroban_sdk::testutils::Events as _;
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let (admin, sme) = free_addresses(&env);
+    let (token, treasury) = free_addresses(&env);
+    let principal: i128 = 10_001;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV001"),
+        &sme,
+        &principal,
+        &1i64, // 0.01% yield
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    let investor = soroban_sdk::Address::generate(&env);
+    client.fund(&investor, &principal);
+    client.settle();
+
+    // coupon = floor(10_001 × 1 / 10_000) = floor(1.0001) = 1
+    // settle_pool = 10_001 + 1 = 10_002
+    let all = env.events().all();
+    let events = all.events();
+    let last = events.last().expect("settle must emit an event");
+    assert_eq!(
+        *last,
+        EscrowSettled {
+            name: symbol_short!("escrow_sd"),
+            invoice_id: soroban_sdk::Symbol::new(&env, "INV001"),
+            funded_amount: principal,
+            yield_bps: 1i64,
+            maturity: 0u64,
+            settled_at_ledger_timestamp: env.ledger().timestamp(),
+            settle_pool: 10_002,
+        }
+        .to_xdr(&env, &contract_id)
+    );
 }
