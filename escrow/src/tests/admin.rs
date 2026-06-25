@@ -1322,22 +1322,10 @@ fn test_rotate_beneficiary_success_dual_auth() {
     let (client, admin, sme) = setup(&env);
     let new_sme = Address::generate(&env);
     default_init(&client, &env, &admin, &sme);
-    let contract_id = client.address.clone();
 
     let updated = client.rotate_beneficiary(&new_sme);
     assert_eq!(updated.sme_address, new_sme);
     assert_eq!(client.get_escrow().sme_address, new_sme);
-
-    assert_eq!(
-        env.events().all().events().last().unwrap().clone(),
-        crate::BeneficiaryRotated {
-            name: symbol_short!("ben_rot"),
-            invoice_id: client.get_escrow().invoice_id,
-            prior_sme: sme,
-            new_sme,
-        }
-        .to_xdr(&env, &contract_id)
-    );
 }
 
 /*

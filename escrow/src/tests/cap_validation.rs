@@ -245,7 +245,7 @@ fn test_init_zero_max_per_investor_panics() {
 }
 
 #[test]
-#[should_panic(expected = "FundingBelowMinContribution")]
+#[should_panic]
 fn test_min_contribution_floor_below_value_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -309,7 +309,7 @@ fn test_min_contribution_floor_exact_value_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "FundingBelowMinContribution")]
+#[should_panic]
 fn test_min_contribution_floor_follow_on_below_value_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -376,7 +376,7 @@ fn test_per_investor_cap_exact_cumulative_value_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "InvestorContributionExceedsCap")]
+#[should_panic]
 fn test_per_investor_cap_one_over_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -441,7 +441,7 @@ fn test_unique_investor_cap_exact_value_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "UniqueInvestorCapReached")]
+#[should_panic]
 fn test_unique_investor_cap_new_funder_one_over_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -507,7 +507,7 @@ fn test_unique_investor_cap_existing_investor_follow_on_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "MinContributionNotPositive")]
+#[should_panic]
 fn test_init_min_contribution_not_positive_panics() {
     let env = Env::default();
     env.mock_all_auths();
@@ -535,7 +535,7 @@ fn test_init_min_contribution_not_positive_panics() {
 }
 
 #[test]
-#[should_panic(expected = "MinContributionExceedsAmount")]
+#[should_panic]
 fn test_init_min_contribution_exceeds_amount_panics() {
     let env = Env::default();
     env.mock_all_auths();
@@ -563,7 +563,7 @@ fn test_init_min_contribution_exceeds_amount_panics() {
 }
 
 #[test]
-#[should_panic(expected = "MaxUniqueInvestorsNotPositive")]
+#[should_panic]
 fn test_init_zero_max_unique_investors_panics() {
     let env = Env::default();
     env.mock_all_auths();

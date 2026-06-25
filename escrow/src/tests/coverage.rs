@@ -1617,7 +1617,7 @@ fn test_claim_not_before_getter() {
         &sme,
         &100,
         &10,
-        &10,
+        &50_000,
         &token,
         &None,
         &treasury,
