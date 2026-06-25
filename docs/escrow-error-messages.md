@@ -28,7 +28,7 @@ Codes are grouped by domain so SDKs can map coarse categories without parsing va
 | Init / pricing | 1–13 | Initialization, invoice id, yield tiers, optional caps | 1, 13 |
 | Uninitialized metadata | 20–22 | Escrow or required addresses not configured | 20, 22 |
 | Dust sweep + SEP-41 safety | 30–42 | Terminal dust sweep and token transfer invariants | 30, 42 |
-| Attestation | 50–51 | Primary hash binding and append-only digest log | 50, 51 |
+| Attestation | 50–53 | Primary hash binding, append-only digest log, revocation and unrevocation | 50, 53 |
 | SME collateral | 60–62 | Off-chain collateral metadata record | 60, 62 |
 | Admin validation | 70–80 | Allowlist batch, funding target, investor cap, maturity, admin handover | 70, 80 |
 | Schema migration | 90–92 | `migrate` version checks | 90, 92 |
@@ -79,6 +79,8 @@ See also [`docs/escrow-legal-hold.md`](escrow-legal-hold.md),
 | 42 | `SweepExceedsLiabilityFloor` | `sweep_terminal_dust` | `balance - sweep_amt < funded_amount - distributed_principal` | Reduce sweep; wait until liabilities refunded | typed |
 | 50 | `PrimaryAttestationAlreadyBound` | `bind_primary_attestation_hash` | primary hash already stored | Use `append_attestation_digest` for updates | typed |
 | 51 | `AttestationAppendLogCapacityReached` | `append_attestation_digest` | log length `>= MAX_ATTESTATION_APPEND_ENTRIES` | Archive off-chain; log is bounded | typed |
+| 52 | `AttestationIndexOutOfRange` | `revoke_attestation_digest`, `unrevoke_attestation_digest` | `index >= log.len()` | Read `get_attestation_append_log` for valid indices | typed |
+| 53 | `AttestationNotRevoked` | `unrevoke_attestation_digest` | index not currently revoked | Only call unrevoke on a revoked index | typed |
 | 60 | `CollateralAmountNotPositive` | `record_sme_collateral_commitment` | `amount <= 0` | Provide positive metadata amount | typed |
 | 61 | `CollateralAssetEmpty` | `record_sme_collateral_commitment` | asset symbol empty | Provide non-empty asset label | typed |
 | 62 | `CollateralTimestampBackwards` | `record_sme_collateral_commitment` | new timestamp `<` stored timestamp | Use monotonic timestamps | typed |
@@ -234,7 +236,7 @@ Recommended SDK category mappings:
 | 1–13 | Invalid initialization or pricing configuration |
 | 20–22 | Missing initialized escrow metadata |
 | 30–42 | Dust sweep or token integration failure |
-| 50–51 | Attestation failure |
+| 50–53 | Attestation failure |
 | 60–62 | Collateral metadata failure |
 | 70–80, 82–83 | Administrative validation or batch-funding bounds failure |
 | 90–92 | Migration failure |

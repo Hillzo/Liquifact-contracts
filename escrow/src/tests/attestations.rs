@@ -326,3 +326,105 @@ fn test_revoke_does_not_affect_primary_hash() {
     client.revoke_attestation_digest(&0);
     assert_eq!(client.get_primary_attestation_hash(), Some(primary));
 }
+
+// ---------------------------------------------------------------------------
+// unrevoke_attestation_digest — restoring a mistaken revocation
+// ---------------------------------------------------------------------------
+
+/// Happy path: revoke then unrevoke restores the non-revoked state.
+#[test]
+fn test_unrevoke_restores_state() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xAA));
+    client.revoke_attestation_digest(&0);
+    assert!(client.is_attestation_revoked(&0));
+    client.unrevoke_attestation_digest(&0);
+    assert!(!client.is_attestation_revoked(&0));
+}
+
+/// After unrevoke, the append log entry is still present and unchanged.
+#[test]
+fn test_unrevoke_preserves_log_entry() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    let d = digest(&env, 0xBB);
+    client.append_attestation_digest(&d);
+    client.revoke_attestation_digest(&0);
+    client.unrevoke_attestation_digest(&0);
+    let log = client.get_attestation_append_log();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log.get(0).unwrap(), d);
+}
+
+/// Unrevoke of a non-revoked index must panic with AttestationNotRevoked.
+#[test]
+#[should_panic]
+fn test_unrevoke_not_revoked_panics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    // Index 0 exists but is NOT revoked — must panic.
+    client.unrevoke_attestation_digest(&0);
+}
+
+/// Unrevoke on an out-of-range index must panic with AttestationIndexOutOfRange.
+#[test]
+#[should_panic]
+fn test_unrevoke_out_of_range_panics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    // Empty log: index 0 is out of range.
+    client.unrevoke_attestation_digest(&0);
+}
+
+/// Double unrevoke: after the first unrevoke the index is no longer revoked,
+/// so a second unrevoke must panic (AttestationNotRevoked).
+#[test]
+#[should_panic]
+fn test_double_unrevoke_panics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x42));
+    client.revoke_attestation_digest(&0);
+    client.unrevoke_attestation_digest(&0);
+    client.unrevoke_attestation_digest(&0);
+}
+
+/// Non-admin caller must not be able to unrevoke.
+#[test]
+#[should_panic]
+fn test_unrevoke_non_admin_panics() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0xFF));
+    client.revoke_attestation_digest(&0);
+    env.mock_auths(&[]);
+    client.unrevoke_attestation_digest(&0);
+}
+
+/// Revoke → unrevoke → revoke again is allowed (round-trip idempotency).
+#[test]
+fn test_revoke_unrevoke_revoke_round_trip() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x10));
+    client.revoke_attestation_digest(&0);
+    client.unrevoke_attestation_digest(&0);
+    client.revoke_attestation_digest(&0);
+    assert!(client.is_attestation_revoked(&0));
+}
+
+/// Unrevoke only affects the targeted index; adjacent indices are untouched.
+#[test]
+fn test_unrevoke_does_not_affect_other_indices() {
+    let env = Env::default();
+    let (client, _) = setup_with_init(&env);
+    client.append_attestation_digest(&digest(&env, 0x01));
+    client.append_attestation_digest(&digest(&env, 0x02));
+    client.revoke_attestation_digest(&0);
+    client.revoke_attestation_digest(&1);
+    client.unrevoke_attestation_digest(&0);
+    assert!(!client.is_attestation_revoked(&0));
+    assert!(client.is_attestation_revoked(&1));
+}

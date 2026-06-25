@@ -77,6 +77,30 @@ be flagged as superseded while the full history stays on-chain.
 **Panics** if `index >= log.len()` (out of range) or if the index has already been revoked
 (double-revocation guard).
 
+### `unrevoke_attestation_digest(index: u32)`
+
+| Property | Value |
+|---|---|
+| Auth | `InvoiceEscrow::admin` |
+| Write policy | Clears `DataKey::AttestationRevoked(index)` — errors if not currently revoked |
+| Storage key | `DataKey::AttestationRevoked(u32)` (removed) |
+| Event | `AttestationDigestUnrevoked { invoice_id, index }` |
+| Typed errors | `AttestationIndexOutOfRange` (52), `AttestationNotRevoked` (53) |
+
+Clears the revocation marker set by `revoke_attestation_digest`. Use this to correct a
+fat-finger revocation before indexers process the erroneous tombstone.
+
+**Guard ordering (ADR-002):** range check → revocation-state check → `require_auth` →
+storage mutation. This means range and state errors are surfaced even to unauthenticated
+callers, consistent with the existing revoke path.
+
+The append log entry and its digest are unaffected. After a successful unrevoke,
+`is_attestation_revoked(index)` returns `false` and the entry is once again treated as
+active by indexers.
+
+**Errors** with `AttestationIndexOutOfRange` (52) if `index >= log.len()`, or
+`AttestationNotRevoked` (53) if the index is not currently revoked.
+
 ---
 
 ## KYC/KYB operational flows
@@ -229,6 +253,34 @@ Off-chain                              On-chain
 The original digest at index N remains in the append log for auditability. Indexers
 consume `AttestationDigestRevoked` events to compute the effective (non-revoked) chain.
 
+### Flow 6 — Correcting an erroneous revocation (unrevoke)
+
+If an admin fat-fingered the index on a `revoke_attestation_digest` call and revoked the
+wrong entry, `unrevoke_attestation_digest` clears the marker before indexers propagate the
+tombstone:
+
+```
+Off-chain                              On-chain
+─────────────────────────────────────────────────────────────────────
+1. Admin realises index N was revoked
+   by mistake (correct target was M).
+                                       2. Admin calls:
+                                          unrevoke_attestation_digest(N)
+                                          → AttestationDigestUnrevoked { index: N }
+
+                                       3. Admin calls (if still needed):
+                                          revoke_attestation_digest(M)
+                                          → AttestationDigestRevoked { index: M }
+
+4. Indexer sees AttestationDigestUnrevoked
+   for index N and removes the
+   superseded label. Entry N is active
+   again; entry M is now the tombstone.
+```
+
+The append log is never mutated. The unrevoke only removes the `DataKey::AttestationRevoked(N)`
+storage key; the digest at index N is unchanged.
+
 ## Security notes
 
 - **Admin key custody:** both entrypoints require `InvoiceEscrow::admin` auth. Production
@@ -255,10 +307,19 @@ consume `AttestationDigestRevoked` events to compute the effective (non-revoked)
 
 - **Double-revocation guard:** each index may be revoked at most once. A second call for the
   same index panics with `"attestation already revoked at index"`. Off-chain indexers can
-  safely assume that once `AttestationDigestRevoked` is observed, it is final.
+  safely assume that once `AttestationDigestRevoked` is observed, it is final unless an
+  `AttestationDigestUnrevoked` event follows.
 
 - **Out-of-range rejection:** revoking a non-existent index panics with `"attestation index
   out of range"`. The admin must read `get_attestation_append_log` to determine valid indices.
+
+- **Unrevoke is admin-only:** `unrevoke_attestation_digest` is gated by `require_auth` on
+  `InvoiceEscrow::admin`. ADR-002 guard ordering is preserved: range and state checks run
+  before auth so typed errors (`AttestationIndexOutOfRange` = 52, `AttestationNotRevoked` = 53)
+  are surfaced cleanly.
+
+- **Unrevoke is idempotent in round-trips:** revoke → unrevoke → revoke is valid. Each
+  transition is guarded, so double-unrevoke is rejected with `AttestationNotRevoked`.
 
 - **Token economics:** attestation entrypoints do not interact with token balances, funding
   state, or settlement flows. They are metadata-only. See
@@ -300,3 +361,11 @@ Attestation behavior is covered in [`escrow/src/test/attestations.rs`](../escrow
 | `test_revoke_non_admin_panics` | Non-admin revoke is rejected |
 | `test_revoke_preserves_log_entry` | Append log contents unchanged after revocation |
 | `test_revoke_does_not_affect_primary_hash` | Revocation leaves primary hash intact |
+| `test_unrevoke_restores_state` | Revoke then unrevoke: `is_attestation_revoked` returns `false` |
+| `test_unrevoke_preserves_log_entry` | Append log entry unchanged after unrevoke |
+| `test_unrevoke_not_revoked_panics` | Unrevoke of non-revoked index is rejected |
+| `test_unrevoke_out_of_range_panics` | Unrevoke on empty log is rejected |
+| `test_double_unrevoke_panics` | Second unrevoke rejected after first succeeds |
+| `test_unrevoke_non_admin_panics` | Non-admin unrevoke is rejected |
+| `test_revoke_unrevoke_revoke_round_trip` | Round-trip revoke → unrevoke → revoke succeeds |
+| `test_unrevoke_does_not_affect_other_indices` | Unrevoke of index 0 leaves index 1 revoked |

@@ -245,6 +245,11 @@ pub enum EscrowError {
     PrimaryAttestationAlreadyBound = 50,
     /// [`LiquifactEscrow::append_attestation_digest`] exceeded [`MAX_ATTESTATION_APPEND_ENTRIES`].
     AttestationAppendLogCapacityReached = 51,
+    /// [`LiquifactEscrow::revoke_attestation_digest`] / [`LiquifactEscrow::unrevoke_attestation_digest`]
+    /// received an `index` that is out of bounds for the current append log.
+    AttestationIndexOutOfRange = 52,
+    /// [`LiquifactEscrow::unrevoke_attestation_digest`] called on an index that is not currently revoked.
+    AttestationNotRevoked = 53,
 
     /// [`LiquifactEscrow::record_sme_collateral_commitment`] received a non-positive amount.
     CollateralAmountNotPositive = 60,
@@ -849,6 +854,20 @@ pub struct AttestationDigestAppended {
 
 #[contractevent]
 pub struct AttestationDigestRevoked {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub index: u32,
+}
+
+/// Emitted by [`LiquifactEscrow::unrevoke_attestation_digest`] when the revocation marker
+/// for a previously revoked append-log entry is cleared by admin.
+///
+/// # Fields
+/// - `invoice_id` — escrow identifier from [`InvoiceEscrow`].
+/// - `index` — 0-based position in the append log whose revocation was cleared.
+#[contractevent]
+pub struct AttestationDigestUnrevoked {
     #[topic]
     pub name: Symbol,
     pub invoice_id: Symbol,
@@ -1725,6 +1744,50 @@ impl LiquifactEscrow {
             .instance()
             .get(&DataKey::AttestationRevoked(index))
             .unwrap_or(false)
+    }
+
+    /// Clears the revocation marker for a previously revoked append-log entry.
+    ///
+    /// Use this to correct a mistaken revocation (fat-finger on a 0-based index)
+    /// without polluting the audit chain permanently.
+    ///
+    /// # Authorization
+    /// Requires `InvoiceEscrow::admin` auth.
+    ///
+    /// # Guard ordering (ADR-002)
+    /// Range check → revocation-state check → `require_auth` → storage mutation.
+    ///
+    /// # Errors
+    /// - [`EscrowError::AttestationIndexOutOfRange`] if `index >= log.len()`.
+    /// - [`EscrowError::AttestationNotRevoked`] if the index is not currently revoked.
+    pub fn unrevoke_attestation_digest(env: Env, index: u32) {
+        let log: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AttestationAppendLog)
+            .unwrap_or_else(|| Vec::new(&env));
+        ensure(&env, index < log.len(), EscrowError::AttestationIndexOutOfRange);
+        ensure(
+            &env,
+            env.storage()
+                .instance()
+                .has(&DataKey::AttestationRevoked(index)),
+            EscrowError::AttestationNotRevoked,
+        );
+
+        let escrow = Self::get_escrow(env.clone());
+        escrow.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::AttestationRevoked(index));
+
+        AttestationDigestUnrevoked {
+            name: symbol_short!("att_unrev"),
+            invoice_id: escrow.invoice_id.clone(),
+            index,
+        }
+        .publish(&env);
     }
 
     pub fn is_investor_claimed(env: Env, investor: Address) -> bool {
