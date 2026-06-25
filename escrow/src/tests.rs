@@ -8,8 +8,9 @@
 )]
 #[allow(unused_imports)]
 use super::{
-    AttestationDigestRevoked, DataKey, EscrowError, EscrowFunded, FundingTargetUpdated, LiquifactEscrow,
-    LiquifactEscrowClient, YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
+    AttestationDigestRevoked, CollateralRecordedEvt, DataKey, EscrowError, EscrowFunded,
+    EscrowInitialized, FundingTargetUpdated, LiquifactEscrow, LiquifactEscrowClient,
+    MaxUniqueInvestorsCapLowered, YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
     MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{

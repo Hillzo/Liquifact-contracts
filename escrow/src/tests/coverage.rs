@@ -1,8 +1,13 @@
-use super::{free_addresses, setup};
-use crate::{CollateralCommitmentSnapshot, DataKey, EscrowCloseSnapshot, EscrowError, YieldTier};
+use super::{
+    free_addresses, install_stellar_asset_token, setup, MAX_ATTESTATION_APPEND_ENTRIES,
+    SCHEMA_VERSION,
+};
+use crate::{
+    CollateralCommitmentSnapshot, DataKey, EscrowCloseSnapshot, EscrowError, YieldTier,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, Error, InvokeError, Vec as SorobanVec,
+    Address, BytesN, Env, Error, InvokeError, Vec as SorobanVec,
 };
 use std::fmt::Debug;
 
@@ -131,15 +136,593 @@ fn typed_error_codes_cover_allowlist_attestation_and_dust_guards() {
 }
 
 #[test]
-#[should_panic]
-fn test_migrate_wrong_version() {
-    let env = Env::default();
-    let (client, _admin, _sme) = setup(&env);
-    client.migrate(&1);
+fn escrow_error_discriminants_match_canonical_table() {
+    const TABLE: &[(EscrowError, u32)] = &[
+        (EscrowError::AmountMustBePositive, 1),
+        (EscrowError::YieldBpsOutOfRange, 2),
+        (EscrowError::EscrowAlreadyInitialized, 3),
+        (EscrowError::InvoiceIdInvalidLength, 4),
+        (EscrowError::InvoiceIdInvalidCharset, 5),
+        (EscrowError::MinContributionNotPositive, 6),
+        (EscrowError::MinContributionExceedsAmount, 7),
+        (EscrowError::MaxUniqueInvestorsNotPositive, 8),
+        (EscrowError::MaxPerInvestorNotPositive, 9),
+        (EscrowError::TierYieldOutOfRange, 10),
+        (EscrowError::TierYieldBelowBase, 11),
+        (EscrowError::TierLockNotIncreasing, 12),
+        (EscrowError::TierYieldNotNonDecreasing, 13),
+        (EscrowError::EscrowNotInitialized, 20),
+        (EscrowError::FundingTokenNotSet, 21),
+        (EscrowError::TreasuryNotSet, 22),
+        (EscrowError::LegalHoldBlocksTreasuryDustSweep, 30),
+        (EscrowError::SweepAmountNotPositive, 31),
+        (EscrowError::SweepAmountExceedsMax, 32),
+        (EscrowError::DustSweepNotTerminal, 33),
+        (EscrowError::NoFundingTokenBalanceToSweep, 34),
+        (EscrowError::EffectiveSweepAmountZero, 35),
+        (EscrowError::TransferAmountNotPositive, 36),
+        (EscrowError::InsufficientTokenBalanceBeforeTransfer, 37),
+        (EscrowError::SenderBalanceUnderflow, 38),
+        (EscrowError::RecipientBalanceUnderflow, 39),
+        (EscrowError::SenderBalanceDeltaMismatch, 40),
+        (EscrowError::RecipientBalanceDeltaMismatch, 41),
+        (EscrowError::SweepExceedsLiabilityFloor, 42),
+        (EscrowError::PrimaryAttestationAlreadyBound, 50),
+        (EscrowError::AttestationAppendLogCapacityReached, 51),
+        (EscrowError::CollateralAmountNotPositive, 60),
+        (EscrowError::CollateralAssetEmpty, 61),
+        (EscrowError::CollateralTimestampBackwards, 62),
+        (EscrowError::InvestorBatchEmpty, 70),
+        (EscrowError::InvestorBatchTooLarge, 71),
+        (EscrowError::TargetNotPositive, 72),
+        (EscrowError::TargetUpdateNotOpen, 73),
+        (EscrowError::TargetBelowFundedAmount, 74),
+        (EscrowError::CapLowerNotOpen, 75),
+        (EscrowError::NoInvestorCapConfigured, 76),
+        (EscrowError::NewCapNotLower, 77),
+        (EscrowError::NewCapBelowCurrentFunderCount, 78),
+        (EscrowError::MaturityUpdateNotOpen, 79),
+        (EscrowError::NewAdminSameAsCurrent, 80),
+        (EscrowError::FundingBatchEmpty, 82),
+        (EscrowError::FundingBatchTooLarge, 83),
+        (EscrowError::MigrationVersionMismatch, 90),
+        (EscrowError::AlreadyCurrentSchemaVersion, 91),
+        (EscrowError::NoMigrationPath, 92),
+        (EscrowError::FundingAmountNotPositive, 100),
+        (EscrowError::FundingBelowMinContribution, 101),
+        (EscrowError::LegalHoldBlocksFunding, 102),
+        (EscrowError::EscrowNotOpenForFunding, 103),
+        (EscrowError::InvestorNotAllowlisted, 104),
+        (EscrowError::InvestorContributionOverflow, 105),
+        (EscrowError::InvestorContributionExceedsCap, 106),
+        (EscrowError::UniqueInvestorCapReached, 107),
+        (EscrowError::TieredSecondDeposit, 108),
+        (EscrowError::InvestorClaimTimeOverflow, 109),
+        (EscrowError::FundedAmountOverflow, 110),
+        (EscrowError::CommitmentLockExceedsMaturity, 111),
+        (EscrowError::LegalHoldBlocksSettlement, 120),
+        (EscrowError::SettlementNotFunded, 121),
+        (EscrowError::MaturityNotReached, 122),
+        (EscrowError::LegalHoldBlocksWithdrawal, 123),
+        (EscrowError::WithdrawalNotFunded, 124),
+        (EscrowError::LegalHoldBlocksInvestorClaims, 125),
+        (EscrowError::NoContributionToClaim, 126),
+        (EscrowError::InvestorClaimNotSettled, 127),
+        (EscrowError::InvestorCommitmentLockNotExpired, 128),
+        (EscrowError::ComputePayoutArithmeticOverflow, 129),
+        (EscrowError::LegalHoldBlocksCancelFunding, 140),
+        (EscrowError::CancelFundingNotOpen, 141),
+        (EscrowError::RefundNotCancelled, 142),
+        (EscrowError::NoContributionToRefund, 143),
+        (EscrowError::LegalHoldClearRequestMissing, 150),
+        (EscrowError::LegalHoldClearNotReady, 151),
+        (EscrowError::LegalHoldClearDelayOverflow, 152),
+        (EscrowError::LegalHoldBlocksBeneficiaryRotation, 160),
+        (EscrowError::RotationNotOpen, 161),
+        (EscrowError::NewSmeSameAsCurrent, 162),
+        (EscrowError::FundingDeadlinePassed, 163),
+        (EscrowError::NoPendingAdmin, 163),
+    ];
+    assert_eq!(TABLE.len(), 83);
+    for (variant, code) in TABLE {
+        assert_eq!(*variant as u32, *code, "discriminant drift for code {code}");
+    }
 }
 
 #[test]
-#[should_panic]
+fn typed_error_codes_cover_range_boundaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, admin, sme) = setup(&env);
+    let (funding_token, treasury) = free_addresses(&env);
+    let investor = Address::generate(&env);
+
+    // Init group: 1 (low) and 13 (high)
+    let init_client = super::deploy(&env);
+    assert_contract_error(
+        init_client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "BOUND_LOW"),
+            &sme,
+            &0,
+            &100,
+            &100,
+            &funding_token,
+            &None,
+            &treasury,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+        ),
+        EscrowError::AmountMustBePositive,
+    );
+    let mut bad_tiers = SorobanVec::new(&env);
+    bad_tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 600,
+    });
+    bad_tiers.push_back(YieldTier {
+        min_lock_secs: 200,
+        yield_bps: 500,
+    });
+    let tier_client = super::deploy(&env);
+    assert_contract_error(
+        tier_client.try_init(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "BOUND_HIGH"),
+            &sme,
+            &100,
+            &100,
+            &100,
+            &funding_token,
+            &None,
+            &treasury,
+            &Some(bad_tiers),
+            &None,
+            &None,
+            &None,
+            &None,
+        ),
+        EscrowError::TierYieldNotNonDecreasing,
+    );
+
+    // Metadata group: 20 and 22
+    let meta_client = super::deploy(&env);
+    assert_contract_error(
+        meta_client.try_fund(&investor, &10),
+        EscrowError::EscrowNotInitialized,
+    );
+    let treasury_client = super::deploy(&env);
+    treasury_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "META22"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    treasury_client.cancel_funding();
+    env.as_contract(&treasury_client.address, || {
+        env.storage().instance().remove(&DataKey::Treasury);
+    });
+    assert_contract_error(
+        treasury_client.try_sweep_terminal_dust(&1),
+        EscrowError::TreasuryNotSet,
+    );
+
+    // Sweep group: 30 (low) and 42 (high)
+    let hold_sweep_client = super::deploy(&env);
+    hold_sweep_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "SWEEP30"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    hold_sweep_client.set_legal_hold(&true);
+    assert_contract_error(
+        hold_sweep_client.try_sweep_terminal_dust(&1),
+        EscrowError::LegalHoldBlocksTreasuryDustSweep,
+    );
+
+    let token = install_stellar_asset_token(&env);
+    let sweep_treasury = Address::generate(&env);
+    let sweep_investor = Address::generate(&env);
+    let fund_amount = 1_000i128;
+    let floor_client = super::deploy(&env);
+    floor_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "SWEEP42"),
+        &sme,
+        &10_000i128,
+        &0i64,
+        &0u64,
+        &token.id,
+        &None,
+        &sweep_treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    token.stellar.mint(&floor_client.address, &fund_amount);
+    floor_client.fund(&sweep_investor, &fund_amount);
+    floor_client.cancel_funding();
+    assert_contract_error(
+        floor_client.try_sweep_terminal_dust(&1),
+        EscrowError::SweepExceedsLiabilityFloor,
+    );
+
+    // Attestation group: 50 and 51
+    let attest_client = super::deploy(&env);
+    attest_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "ATTEST"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    let digest = BytesN::from_array(&env, &[1u8; 32]);
+    attest_client.bind_primary_attestation_hash(&digest);
+    assert_contract_error(
+        attest_client.try_bind_primary_attestation_hash(&digest),
+        EscrowError::PrimaryAttestationAlreadyBound,
+    );
+    for i in 0u8..MAX_ATTESTATION_APPEND_ENTRIES as u8 {
+        attest_client.append_attestation_digest(&BytesN::from_array(&env, &[i; 32]));
+    }
+    assert_contract_error(
+        attest_client.try_append_attestation_digest(&BytesN::from_array(&env, &[0xFF; 32])),
+        EscrowError::AttestationAppendLogCapacityReached,
+    );
+
+    // Collateral group: 60 and 62
+    let collat_client = super::deploy(&env);
+    collat_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "COLLAT"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    let asset = soroban_sdk::Symbol::new(&env, "GOLD");
+    assert_contract_error(
+        collat_client.try_record_sme_collateral_commitment(&asset, &0),
+        EscrowError::CollateralAmountNotPositive,
+    );
+    collat_client.record_sme_collateral_commitment(&asset, &100);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp().saturating_sub(1));
+    assert_contract_error(
+        collat_client.try_record_sme_collateral_commitment(&asset, &200),
+        EscrowError::CollateralTimestampBackwards,
+    );
+
+    // Admin group: 72 and 80 (skip legacy 70–78)
+    let admin_client = super::deploy(&env);
+    admin_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "ADMIN"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    assert_contract_error(
+        admin_client.try_update_funding_target(&0),
+        EscrowError::TargetNotPositive,
+    );
+    assert_contract_error(
+        admin_client.try_propose_admin(&admin),
+        EscrowError::NewAdminSameAsCurrent,
+    );
+
+    // Migration group: 90–92
+    let migrate_client = super::deploy(&env);
+    migrate_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "MIGRATE"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    assert_contract_error(
+        migrate_client.try_migrate(&(SCHEMA_VERSION - 1)),
+        EscrowError::MigrationVersionMismatch,
+    );
+    assert_contract_error(
+        migrate_client.try_migrate(&SCHEMA_VERSION),
+        EscrowError::AlreadyCurrentSchemaVersion,
+    );
+    env.as_contract(&migrate_client.address, || {
+        env.storage().instance().set(&DataKey::Version, &0u32);
+    });
+    assert_contract_error(migrate_client.try_migrate(&0), EscrowError::NoMigrationPath);
+
+    // Funding group: 100 (skip legacy 108)
+    let fund_client = super::deploy(&env);
+    fund_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "FUND100"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    assert_contract_error(
+        fund_client.try_fund(&investor, &0),
+        EscrowError::FundingAmountNotPositive,
+    );
+
+    // Settlement group: 120 and 126
+    let settle_client = super::deploy(&env);
+    settle_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "SETTLE"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    settle_client.set_legal_hold(&true);
+    assert_contract_error(
+        settle_client.try_settle(),
+        EscrowError::LegalHoldBlocksSettlement,
+    );
+    settle_client.clear_legal_hold();
+    assert_contract_error(
+        settle_client.try_claim_investor_payout(&investor),
+        EscrowError::NoContributionToClaim,
+    );
+
+    // Refund group: 140 and 143
+    let refund_client = super::deploy(&env);
+    refund_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "REFUND"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    refund_client.set_legal_hold(&true);
+    assert_contract_error(
+        refund_client.try_cancel_funding(),
+        EscrowError::LegalHoldBlocksCancelFunding,
+    );
+    refund_client.clear_legal_hold();
+    refund_client.cancel_funding();
+    assert_contract_error(
+        refund_client.try_refund(&investor),
+        EscrowError::NoContributionToRefund,
+    );
+
+    // Legal-hold clear group: 150 and 151
+    let lh_client = super::deploy(&env);
+    lh_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "LH150"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(10u64),
+    );
+    lh_client.set_legal_hold(&true);
+    assert_contract_error(
+        lh_client.try_set_legal_hold(&false),
+        EscrowError::LegalHoldClearRequestMissing,
+    );
+    lh_client.request_clear_legal_hold();
+    assert_contract_error(
+        lh_client.try_set_legal_hold(&false),
+        EscrowError::LegalHoldClearNotReady,
+    );
+
+    // Beneficiary rotation group: 160–162
+    let rot_client = super::deploy(&env);
+    rot_client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "ROT160"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    rot_client.set_legal_hold(&true);
+    let new_sme = Address::generate(&env);
+    assert_contract_error(
+        rot_client.try_rotate_beneficiary(&new_sme),
+        EscrowError::LegalHoldBlocksBeneficiaryRotation,
+    );
+    rot_client.clear_legal_hold();
+    assert_contract_error(
+        rot_client.try_rotate_beneficiary(&sme),
+        EscrowError::NewSmeSameAsCurrent,
+    );
+
+    let rot_terminal = super::deploy(&env);
+    let rot_token = install_stellar_asset_token(&env);
+    rot_terminal.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "ROT161"),
+        &sme,
+        &100,
+        &0i64,
+        &0u64,
+        &rot_token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    rot_token.stellar.mint(&rot_terminal.address, &100);
+    rot_terminal.fund(&investor, &100);
+    rot_terminal.settle();
+    assert_contract_error(
+        rot_terminal.try_rotate_beneficiary(&new_sme),
+        EscrowError::RotationNotOpen,
+    );
+}
+
+#[test]
+fn typed_error_codes_cover_legal_hold_clear_delay_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let (funding_token, treasury) = free_addresses(&env);
+    env.ledger().set_timestamp(u64::MAX - 5);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "LH152"),
+        &sme,
+        &100,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(10u64),
+    );
+    client.set_legal_hold(&true);
+    assert_contract_error(
+        client.try_request_clear_legal_hold(),
+        EscrowError::LegalHoldClearDelayOverflow,
+    );
+}
+
+#[test]
+fn test_migrate_wrong_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let (funding_token, treasury) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "MIG90"),
+        &sme,
+        &1000,
+        &100,
+        &100,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    assert_contract_error(
+        client.try_migrate(&(SCHEMA_VERSION - 1)),
+        EscrowError::MigrationVersionMismatch,
+    );
+}
+
+#[test]
 fn test_migrate_already_current() {
     let env = Env::default();
     env.mock_all_auths();
@@ -164,11 +747,13 @@ fn test_migrate_already_current() {
         &None,
     );
 
-    client.migrate(&5);
+    assert_contract_error(
+        client.try_migrate(&SCHEMA_VERSION),
+        EscrowError::AlreadyCurrentSchemaVersion,
+    );
 }
 
 #[test]
-#[should_panic]
 fn test_migrate_no_path() {
     let env = Env::default();
     env.mock_all_auths();
@@ -197,7 +782,7 @@ fn test_migrate_no_path() {
         env.storage().instance().set(&DataKey::Version, &0u32);
     });
 
-    client.migrate(&0);
+    assert_contract_error(client.try_migrate(&0), EscrowError::NoMigrationPath);
 }
 
 #[test]
