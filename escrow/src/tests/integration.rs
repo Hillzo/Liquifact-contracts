@@ -58,9 +58,10 @@ fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
+        &None,
     );
 
-    // We will not fund or settle ÔÇö just exercise legal hold at multiple points.
+    // We will not fund or settle ├ö├ç├Â just exercise legal hold at multiple points.
     // The contract id is derived from the deploy_and_init sequence, so we
     // capture it for auth mock setup.
 
@@ -161,6 +162,7 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
         &None, // No yield tiers for simplicity
         &None, // No min contribution floor
         &None, // No max investors cap
+        &None,
         &None,
         &None,
         &None,
@@ -300,7 +302,7 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
 
     // Note: The contract tracks claims but doesn't return payout amounts.
     // In a real integration, the payout calculation would be:
-    // payout = principal + (principal ├ù yield_bps) / 10_000
+    // payout = principal + (principal Ôö£├╣ yield_bps) / 10_000
     assert_eq!(
         alice_expected_payout,
         alice_amount + (alice_amount * YIELD_BPS as i128) / 10_000
@@ -318,17 +320,17 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
 
     // === SUCCESS SUMMARY ===
     // This test successfully demonstrates:
-    // Ô£ô Escrow initialization with realistic USDC amounts
-    // Ô£ô Multi-investor funding with overfunding at funding close
-    // Ô£ô Automatic status transitions (Open ÔåÆ Funded ÔåÆ Settled)
-    // Ô£ô Funding close snapshot capture and verification
-    // Ô£ô Maturity-gated settlement by SME
-    // Ô£ô Individual investor claim processing with correct yield calculation
-    // Ô£ô State consistency throughout the complete lifecycle
+    // ├ö┬ú├┤ Escrow initialization with realistic USDC amounts
+    // ├ö┬ú├┤ Multi-investor funding with overfunding at funding close
+    // ├ö┬ú├┤ Automatic status transitions (Open ├ö├Ñ├å Funded ├ö├Ñ├å Settled)
+    // ├ö┬ú├┤ Funding close snapshot capture and verification
+    // ├ö┬ú├┤ Maturity-gated settlement by SME
+    // ├ö┬ú├┤ Individual investor claim processing with correct yield calculation
+    // ├ö┬ú├┤ State consistency throughout the complete lifecycle
 }
 
 /// Helper function to calculate expected payout using the same formula as the contract.
-/// Formula: payout = principal + (principal ├ù yield_bps) / 10_000
+/// Formula: payout = principal + (principal Ôö£├╣ yield_bps) / 10_000
 /// This matches the contract's `calculate_principal_plus_yield` function.
 fn calculate_expected_payout(principal: i128, yield_bps: i64) -> i128 {
     let yield_amount = (principal * yield_bps as i128) / 10_000;
@@ -388,6 +390,7 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
         &None,
         &treasury,
         &Some(yield_tiers),
+        &None,
         &None,
         &None,
         &None,
@@ -513,6 +516,7 @@ fn test_collateral_record_is_metadata_only_and_does_not_invoke_token_contract() 
         &funding,
         &None,
         &treasury,
+        &None,
         &None,
         &None,
         &None,
@@ -754,6 +758,7 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
         &None,
         &None,
         &None,
+        &None,
     );
 
     // Initial funding succeeds while hold is off.
@@ -808,7 +813,7 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
     }
     .to_xdr(&env, &contract_id);
 
-    // Iterate via index ÔÇö soroban Vec iterator adapters don't include position().
+    // Iterate via index ├ö├ç├Â soroban Vec iterator adapters don't include position().
     let events_all = env.events().all();
     let all_event_list = events_all.events();
     let mut hold_on_pos: Option<usize> = None;
@@ -830,9 +835,9 @@ fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
     );
 }
 
-// ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+// ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç
 // On-chain SME disbursement tests (contracts-02)
-// ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+// ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç
 
 /// Helper: deploy, init with a real SAC token, fund to `target`, and mint
 /// `target` tokens into the escrow contract.  Returns
@@ -871,6 +876,7 @@ fn setup_withdraw_with_token(
         &token_id,
         &None,
         &treasury,
+        &None,
         &None,
         &None,
         &None,
@@ -939,7 +945,7 @@ fn withdraw_updates_distributed_principal() {
 
     client.withdraw();
 
-    // DistributedPrincipal is internal storage ÔÇö verify indirectly via the
+    // DistributedPrincipal is internal storage ├ö├ç├Â verify indirectly via the
     // dust-sweep liability floor.  After disbursement the outstanding liability
     // is zero (funded_amount == distributed_principal), so a dust sweep of any
     // residual amount must not be blocked by SweepExceedsLiabilityFloor.
@@ -997,8 +1003,9 @@ fn withdraw_rejected_wrong_status_open() {
         &None,
         &None,
         &None,
+        &None,
     );
-    // No funding ÔÇö status is 0.
+    // No funding ├ö├ç├Â status is 0.
     client.withdraw(); // must panic: WithdrawalNotFunded
 }
 
@@ -1040,12 +1047,13 @@ fn withdraw_rejected_insufficient_contract_balance() {
         &None,
         &None,
         &None,
+        &None,
     );
 
     let investor = soroban_sdk::Address::generate(&env);
     client.fund(&investor, &target);
 
-    // Mint only half ÔÇö contract balance < funded_amount.
+    // Mint only half ├ö├ç├Â contract balance < funded_amount.
     sac_admin.mint(&escrow_id, &(target / 2));
 
     client.withdraw(); // must panic: InsufficientContractBalance
@@ -1061,7 +1069,7 @@ fn withdraw_double_withdraw_panics() {
     let (client, _escrow_id, _token, _sme) =
         setup_withdraw_with_token(&env, 10_000_000i128, "WD_DW001");
 
-    client.withdraw(); // succeeds ÔÇö status ÔåÆ 3
+    client.withdraw(); // succeeds ├ö├ç├Â status ├ö├Ñ├å 3
     client.withdraw(); // must panic: WithdrawalNotFunded (status == 3 != 1)
 }
 

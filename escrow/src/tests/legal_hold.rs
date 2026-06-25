@@ -1,4 +1,4 @@
-﻿//! Legal-hold matrix tests.
+//! Legal-hold matrix tests.
 //!
 //! Each risk-bearing function gets two focused tests:
 //!   `*_blocked_under_hold`  ÔÇö hold=true  ÔåÆ must panic with the exact contract message
@@ -52,6 +52,7 @@ fn init_open(
         &None,
         &None,
         &None,
+        &None,
     );
     (token, treasury)
 }
@@ -83,6 +84,7 @@ fn init_open_with_clear_delay(
         &None,
         &legal_hold_clear_delay,
         &None,
+        &None,
     );
     (token, treasury)
 }
@@ -112,6 +114,7 @@ fn init_funded_with_real_token<'a>(
         &token_id,
         &None,
         &treasury,
+        &None,
         &None,
         &None,
         &None,
@@ -162,6 +165,7 @@ fn init_settled<'a>(
         &token,
         &None,
         &treasury,
+        &None,
         &None,
         &None,
         &None,
