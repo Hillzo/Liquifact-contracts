@@ -365,7 +365,14 @@ pub enum EscrowError {
     NoPendingAdmin = 163,
     /// The contract's funding-token balance is less than `funded_amount` at withdraw time.
     /// Funds must be custodied in this contract before the SME can pull them.
-    InsufficientContractBalance = 164,
+    ///
+    /// # Renumber note
+    /// Originally assigned `= 164`, but `FundingDeadlinePassed = 164` had
+    /// already taken that discriminant, which made the whole crate fail
+    /// to compile (`E0081` duplicate discriminant). This variant is now
+    /// `= 165`. Off-chain clients that branch on the numeric code must
+    /// migrate their `switch`/match arms when integrating this fix.
+    InsufficientContractBalance = 165,
 }
 
 #[inline(always)]
@@ -725,6 +732,33 @@ pub struct AdminProposedEvent {
     pub invoice_id: Symbol,
     pub current_admin: Address,
     pub pending_admin: Address,
+}
+
+/// Emitted by [`LiquifactEscrow::transfer_admin`] (the deprecated one-step
+/// admin transfer shim) so indexers and operators can flag integrators
+/// still using the legacy single-step path.
+///
+/// This is purely **observability** — handover behavior is unchanged:
+/// the shim still delegates to [`LiquifactEscrow::propose_admin`], which
+/// still emits [`AdminProposedEvent`] as its primary signal. Operators
+/// can aggregate this event over a deployment window to count callers
+/// still using the deprecated entrypoint and drive them to the canonical
+/// `propose_admin` → `accept_admin` two-step flow before `transfer_admin`
+/// is removed.
+///
+/// # Fields
+/// - `name`: Hardcoded `depr_xfer` symbol for routing/indexer filtering.
+/// - `invoice_id`: Symbol representation of the escrow invoice.
+/// - `proposed_address`: The address proposed via the deprecated shim.
+///   Equal to `pending_admin` on the [`AdminProposedEvent`] emitted in the
+///   same transaction, so indexers can correlate the two events one-to-one.
+#[contractevent]
+pub struct DeprecatedTransferAdminUsed {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub proposed_address: Address,
 }
 
 #[contractevent]
@@ -1202,6 +1236,38 @@ impl LiquifactEscrow {
     /// status guards.
     pub fn has_maturity_lock(env: Env) -> bool {
         Self::get_escrow(env).maturity > 0
+    }
+
+    /// Boolean view: is the escrow currently in a state where [`LiquifactEscrow::settle`]
+    /// would succeed if invoked right now?
+    ///
+    /// Returns `true` when **all** of the following hold:
+    ///
+    /// 1. The escrow is initialized and [`InvoiceEscrow::status`] is `1` (funded).
+    /// 2. No legal/compliance hold is active (`LegalHoldBlocksSettlement` would
+    ///    not fire).
+    /// 3. Either the escrow has no maturity lock (`maturity == 0`) OR
+    ///    [`Env::ledger`] time is at or past `maturity`.
+    ///
+    /// Existing terminal states (`2` settled, `3` withdrawn, `4` cancelled)
+    /// return `false` because settlement is no longer applicable; the open
+    /// state (`0`) returns `false` because the funding target has not been met.
+    ///
+    /// **Pure view:** no storage mutation. The result reflects the ledger
+    /// timestamp observed when the contract was called; reverify after any
+    /// boundary-crossing transaction (especially near `maturity`).
+    pub fn is_settleable(env: Env) -> bool {
+        let escrow = Self::get_escrow(env.clone());
+        if escrow.status != 1 {
+            return false;
+        }
+        if Self::legal_hold_active(&env) {
+            return false;
+        }
+        if escrow.maturity == 0 {
+            return true;
+        }
+        env.ledger().timestamp() >= escrow.maturity
     }
 
     /// Move up to `amount` (capped by balance and [`MAX_DUST_SWEEP_AMOUNT`]) of the **funding token**
@@ -2201,11 +2267,7 @@ impl LiquifactEscrow {
         let n = entries.len();
 
         ensure(&env, n > 0, EscrowError::FundingBatchEmpty);
-        ensure(
-            &env,
-            n <= MAX_FUND_BATCH,
-            EscrowError::FundingBatchTooLarge,
-        );
+        ensure(&env, n <= MAX_FUND_BATCH, EscrowError::FundingBatchTooLarge);
 
         let mut escrow = Self::get_escrow(env.clone());
 
@@ -2886,10 +2948,42 @@ impl LiquifactEscrow {
     /// This function now only proposes `new_admin` by delegating to
     /// [`LiquifactEscrow::propose_admin`]. The proposed address must still call
     /// [`LiquifactEscrow::accept_admin`] before admin authority changes.
+    ///
+    /// # Deprecation observability (issue #386)
+    ///
+    /// Each successful call publishes **two** events, in this order:
+    ///
+    /// 1. [`AdminProposedEvent`] from the inner
+    ///    [`LiquifactEscrow::propose_admin`] delegation.
+    /// 2. [`DeprecatedTransferAdminUsed`], carrying the same proposed
+    ///    address, so indexers and operators can distinguish legacy
+    ///    one-step callers from those using the canonical two-step flow.
+    ///
+    /// Intended removal path: aggregate [`DeprecatedTransferAdminUsed`] over a
+    /// deployment window, migrate remaining integrations to
+    /// [`LiquifactEscrow::propose_admin`] followed by
+    /// [`LiquifactEscrow::accept_admin`], then drop this shim. Until removal,
+    /// handover semantics are unchanged and no new authority is granted
+    /// beyond what [`LiquifactEscrow::propose_admin`] already exposes.
     #[deprecated(note = "use propose_admin followed by accept_admin")]
     pub fn transfer_admin(env: Env, new_admin: Address) -> InvoiceEscrow {
-        Self::propose_admin(env.clone(), new_admin);
-        Self::get_escrow(env)
+        Self::propose_admin(env.clone(), new_admin.clone());
+
+        // Re-read after the propose_admin delegation so the deprecation event
+        // carries the exact `invoice_id` indexers will see in the prior
+        // `AdminProposedEvent`. Reading after (not before) keeps a single
+        // extra instance-storage read, since `propose_admin` does not expose
+        // its loaded escrow back through the return type.
+        let escrow = Self::get_escrow(env.clone());
+
+        DeprecatedTransferAdminUsed {
+            name: symbol_short!("depr_xfer"),
+            invoice_id: escrow.invoice_id.clone(),
+            proposed_address: new_admin,
+        }
+        .publish(&env);
+
+        escrow
     }
 
     /// Transition an **open** escrow (status 0) to **cancelled** (status 4).

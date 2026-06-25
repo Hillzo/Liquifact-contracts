@@ -432,6 +432,38 @@ transaction**. This is intentional — it prevents operators from accidentally
 skipping version validation. Do not script automated `migrate()` calls without
 first implementing the migration path.
 
+### Deprecated-entrypoint observability (issue #386)
+
+`transfer_admin` is exposed solely as a `#[deprecated]` shim that delegates
+to `propose_admin`. Every successful call publishes two events in this
+order:
+
+1. `AdminProposedEvent` from the inner `propose_admin` delegation
+   (the existing canonical proposal signal).
+2. `DeprecatedTransferAdminUsed`, carrying the same proposed address, so
+   indexers and operators can flag callers still using the legacy one-step
+   path.
+
+Handover semantics are unchanged; the extra event is purely **observability**.
+Failed `transfer_admin` calls (for example, `new_admin == current_admin`
+rejected with `EscrowError::NewAdminSameAsCurrent`) do **not** publish either
+event, so failed calls cannot pollute the legacy-usage count.
+
+Operator playbook:
+
+- Query historical `DeprecatedTransferAdminUsed` events grouped by
+  `(contractId, invoice_id)` to enumerate integrations still on the legacy path.
+- Notify those callers and confirm they migrate to `propose_admin` followed
+  by `accept_admin`.
+- When the per-deployment count of `DeprecatedTransferAdminUsed` has stayed at
+  zero for a full release window, schedule removal of the `transfer_admin`
+  shim in a follow-up PR. Until then, the shim provides forward-compatibility
+  for un-migrated integrations while emitting the observability signal needed
+  to discover them.
+
+See `docs/EVENT_SCHEMA.md` (`DeprecatedTransferAdminUsed`) for the full
+event topic/data layout.
+
 ---
 
 ## 9. Version compatibility matrix

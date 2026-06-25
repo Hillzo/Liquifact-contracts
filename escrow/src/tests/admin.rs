@@ -174,6 +174,203 @@ fn test_transfer_admin_deprecated_shim_only_proposes() {
     assert_eq!(client.get_pending_admin(), Some(new_admin));
 }
 
+// --- Deprecated transfer_admin shim observability (issue #386) ---
+//
+// `transfer_admin` is a `#[deprecated]` shim that delegates to `propose_admin`.
+// To make legacy one-step usage observable to indexers (and to drive the
+// deprecation to completion), every successful `transfer_admin` call must
+// publish **two** events in order: the existing `AdminProposedEvent` from the
+// inner `propose_admin` delegation, followed by a dedicated
+// `DeprecatedTransferAdminUsed` event. The canonical two-step entrypoint
+// `propose_admin` must NOT emit `DeprecatedTransferAdminUsed`, so indexers
+// can keep the two paths distinguishable.
+
+/// `transfer_admin` must publish both events in this order:
+/// `AdminProposedEvent` first (from the inner `propose_admin` delegation),
+/// then `DeprecatedTransferAdminUsed`as the per-tx last event.
+#[test]
+#[allow(deprecated)]
+fn test_transfer_admin_emits_proposal_and_deprecation_events_in_order() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let new_admin = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Capture event count before the call so the assertion uses a delta and
+    // stays robust against any future init-time event additions.
+    let events_before = env.events().all().len();
+
+    client.transfer_admin(&new_admin);
+
+    let events = env.events().all();
+    // Successful shim call publishes exactly 2 extra events: the inner
+    // AdminProposedEvent plus the DeprecatedTransferAdminUsed.
+    assert_eq!(
+        events.len(),
+        events_before + 2,
+        "transfer_admin must publish AdminProposedEvent + DeprecatedTransferAdminUsed"
+    );
+
+    let proposal = AdminProposedEvent {
+        name: symbol_short!("adm_prop"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        current_admin: admin.clone(),
+        pending_admin: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert_eq!(events.get(events_before).unwrap().clone(), proposal);
+
+    let deprecation = crate::DeprecatedTransferAdminUsed {
+        name: symbol_short!("depr_xfer"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        proposed_address: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert_eq!(events.get(events_before + 1).unwrap().clone(), deprecation);
+    // And the per-tx last event must be the deprecation event, not the proposal.
+    assert_eq!(events.last().unwrap().clone(), deprecation);
+}
+
+/// `propose_admin` (the canonical two-step entrypoint) must NOT emit
+/// `DeprecatedTransferAdminUsed` — that event is reserved for the
+/// deprecated shim so indexers can distinguish the two paths.
+#[test]
+fn test_propose_admin_does_not_emit_deprecation_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let new_admin = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Capture event count before the call so the assertion is delta-based.
+    let events_before = env.events().all().len();
+
+    client.propose_admin(&new_admin);
+
+    let events = env.events().all();
+    // propose_admin publishes exactly one extra event: its own AdminProposedEvent,
+    // nothing else.
+    assert_eq!(
+        events.len(),
+        events_before + 1,
+        "propose_admin must publish only its own AdminProposedEvent"
+    );
+
+    // The single AdminProposedEvent should still match the canonical payload.
+    let proposal = AdminProposedEvent {
+        name: symbol_short!("adm_prop"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        current_admin: admin.clone(),
+        pending_admin: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert_eq!(events.last().unwrap().clone(), proposal);
+
+    // Verify the deprecation event XDR is NOT in the recorded event list.
+    let deprecation = crate::DeprecatedTransferAdminUsed {
+        name: symbol_short!("depr_xfer"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        proposed_address: new_admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(
+        !events.contains(&deprecation),
+        "propose_admin must not emit DeprecatedTransferAdminUsed"
+    );
+}
+
+/// The `proposed_address` carried by `DeprecatedTransferAdminUsed` must equal
+/// the `new_admin` argument passed to `transfer_admin`, so indexers can
+/// correlate the deprecation event with the `pending_admin` of the prior
+/// `AdminProposedEvent` emitted in the same transaction.
+#[test]
+#[allow(deprecated)]
+fn test_transfer_admin_deprecation_event_proposed_address_matches_call_arg() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let new_admin = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    client.transfer_admin(&new_admin);
+
+    let events = env.events().all();
+    assert_eq!(
+        events.last().unwrap().clone(),
+        crate::DeprecatedTransferAdminUsed {
+            name: symbol_short!("depr_xfer"),
+            invoice_id: client.get_escrow().invoice_id,
+            proposed_address: new_admin,
+        }
+        .to_xdr(&env, &contract_id)
+    );
+}
+
+/// On the rejection path (`transfer_admin` called with the current admin),
+/// `propose_admin` aborts with a typed error before any
+/// `DeprecatedTransferAdminUsed` is published. Confirming no deprecation
+/// event is emitted in the rejection path means failed calls cannot
+/// pollute the deprecation-usage count.
+#[test]
+#[allow(deprecated)]
+fn test_transfer_admin_does_not_emit_deprecation_event_on_rejection() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    default_init(&client, &env, &admin, &sme);
+
+    // Capture event count before the rejected call so the assertion stays
+    // robust against any future init-time event additions.
+    let events_before = env.events().all().len();
+
+    // Same-address proposal: propose_admin aborts with `NewAdminSameAsCurrent`.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.transfer_admin(&admin);
+    }));
+    assert!(result.is_err(), "transfer_admin(current_admin) must reject");
+
+    let events = env.events().all();
+    assert_eq!(
+        events.len(),
+        events_before,
+        "rejected transfer_admin must publish no extra events"
+    );
+
+    let deprecation = crate::DeprecatedTransferAdminUsed {
+        name: symbol_short!("depr_xfer"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        proposed_address: admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(
+        !events.contains(&deprecation),
+        "transfer_admin rejection must not emit DeprecatedTransferAdminUsed"
+    );
+
+    // And the AdminProposedEvent must not be present either (propose_admin
+    // rejected the same-address proposal before reaching its publish call).
+    let proposal = AdminProposedEvent {
+        name: symbol_short!("adm_prop"),
+        invoice_id: client.get_escrow().invoice_id.clone(),
+        current_admin: admin.clone(),
+        pending_admin: admin.clone(),
+    }
+    .to_xdr(&env, &contract_id);
+    assert!(
+        !events.contains(&proposal),
+        "transfer_admin rejection must not emit AdminProposedEvent"
+    );
+}
+
 #[test]
 #[should_panic]
 fn test_transfer_admin_same_address_panics() {
@@ -777,8 +974,7 @@ fn test_update_funding_target_fails_when_settled() {
 fn test_update_funding_target_fails_when_withdrawn() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _escrow_id, _sme) =
-        init_and_fund_with_real_token(&env, 5_000i128, "WD001");
+    let (client, _escrow_id, _sme) = init_and_fund_with_real_token(&env, 5_000i128, "WD001");
     client.withdraw(); // status → 3 (withdrawn)
     client.update_funding_target(&6_000i128);
 }
@@ -984,8 +1180,7 @@ fn test_update_maturity_fails_when_settled() {
 fn test_update_maturity_fails_when_withdrawn() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _escrow_id, _sme) =
-        init_and_fund_with_real_token(&env, 5_000i128, "MAT004");
+    let (client, _escrow_id, _sme) = init_and_fund_with_real_token(&env, 5_000i128, "MAT004");
     client.withdraw(); // status → 3
     client.update_maturity(&2000u64);
 }
