@@ -2849,20 +2849,14 @@ fn read_view_error_on_absent_before_init() {
     let (funding_token, treasury) = free_addresses(&env);
 
     // get_escrow → EscrowNotInitialized (20)
-    assert_contract_error(
-        client.try_get_escrow(),
-        EscrowError::EscrowNotInitialized,
-    );
+    assert_contract_error(client.try_get_escrow(), EscrowError::EscrowNotInitialized);
     // get_funding_token → FundingTokenNotSet (21)
     assert_contract_error(
         client.try_get_funding_token(),
         EscrowError::FundingTokenNotSet,
     );
     // get_treasury → TreasuryNotSet (22)
-    assert_contract_error(
-        client.try_get_treasury(),
-        EscrowError::TreasuryNotSet,
-    );
+    assert_contract_error(client.try_get_treasury(), EscrowError::TreasuryNotSet);
     // get_escrow_summary → EscrowNotInitialized (20)
     assert_contract_error(
         client.try_get_escrow_summary(),
@@ -3091,7 +3085,7 @@ fn read_view_compute_investor_payout_pre_and_post_fund() {
         &soroban_sdk::String::from_str(&env, "PAY_TST"),
         &sme,
         &1000,
-        &1000,  // 10% yield
+        &1000, // 10% yield
         &0,
         &funding_token,
         &None,
