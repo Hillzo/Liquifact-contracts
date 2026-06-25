@@ -4,7 +4,37 @@
 //! - SME receives stablecoin when funding target is met
 //! - Investors receive principal + yield when buyer pays at maturity
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Symbol,
+};
+
+// ---------------------------------------------------------------------------
+// Storage keys
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+pub enum DataKey {
+    Escrow,
+    SmeCollateralPledge,
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[contracterror]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EscrowError {
+    NotInitialized = 1,
+    NotOpen = 2,
+    NotFunded = 3,
+    /// Raised by clear_sme_collateral_commitment when no pledge is recorded.
+    NoCollateralToClear = 4,
+}
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +56,58 @@ pub struct InvoiceEscrow {
     /// Escrow status: 0 = open, 1 = funded, 2 = settled
     pub status: u32,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralPledge {
+    pub invoice_id: Symbol,
+    pub amount: i128,
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+/// Emitted by record_sme_collateral_commitment.
+#[contractevent(topics = ["collateral_recorded"])]
+pub struct CollateralRecordedEvt {
+    #[topic]
+    pub invoice_id: Symbol,
+    pub amount: i128,
+}
+
+/// Emitted by clear_sme_collateral_commitment when a pledge is retired.
+///
+/// `amount` carries the value from the removed pledge record.
+#[contractevent(topics = ["collateral_cleared"])]
+pub struct CollateralClearedEvt {
+    #[topic]
+    pub invoice_id: Symbol,
+    /// The amount that was recorded in the retired pledge.
+    pub amount: i128,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn load_escrow(env: &Env) -> Result<InvoiceEscrow, EscrowError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Escrow)
+        .ok_or(EscrowError::NotInitialized)
+}
+
+/// Load escrow and require the caller to be the SME address.
+fn load_escrow_require_sme(env: &Env) -> Result<InvoiceEscrow, EscrowError> {
+    let escrow = load_escrow(env)?;
+    escrow.sme_address.require_auth();
+    Ok(escrow)
+}
+
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
 
 #[contract]
 pub struct LiquifactEscrow;
@@ -49,11 +131,9 @@ impl LiquifactEscrow {
             funded_amount: 0,
             yield_bps,
             maturity,
-            status: 0, // open
+            status: 0,
         };
-        env.storage()
-            .instance()
-            .set(&symbol_short!("escrow"), &escrow);
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
         escrow
     }
 
@@ -61,7 +141,7 @@ impl LiquifactEscrow {
     pub fn get_escrow(env: Env) -> InvoiceEscrow {
         env.storage()
             .instance()
-            .get(&symbol_short!("escrow"))
+            .get(&DataKey::Escrow)
             .unwrap_or_else(|| panic!("Escrow not initialized"))
     }
 
@@ -71,11 +151,9 @@ impl LiquifactEscrow {
         assert!(escrow.status == 0, "Escrow not open for funding");
         escrow.funded_amount += amount;
         if escrow.funded_amount >= escrow.funding_target {
-            escrow.status = 1; // funded - ready to release to SME
+            escrow.status = 1;
         }
-        env.storage()
-            .instance()
-            .set(&symbol_short!("escrow"), &escrow);
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
         escrow
     }
 
@@ -86,13 +164,76 @@ impl LiquifactEscrow {
             escrow.status == 1,
             "Escrow must be funded before settlement"
         );
-        escrow.status = 2; // settled
+        escrow.status = 2;
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+        escrow
+    }
+
+    // -----------------------------------------------------------------------
+    // Collateral metadata (no token movement)
+    // -----------------------------------------------------------------------
+
+    /// Record an off-chain collateral pledge for this invoice.
+    ///
+    /// Metadata-only: no tokens are moved or reserved. Requires SME auth.
+    /// Overwrites any previously recorded pledge.
+    /// Emits [`CollateralRecordedEvt`].
+    pub fn record_sme_collateral_commitment(env: Env, amount: i128) -> Result<(), EscrowError> {
+        let escrow = load_escrow_require_sme(&env)?;
+        let pledge = CollateralPledge {
+            invoice_id: escrow.invoice_id.clone(),
+            amount,
+        };
         env.storage()
             .instance()
-            .set(&symbol_short!("escrow"), &escrow);
-        escrow
+            .set(&DataKey::SmeCollateralPledge, &pledge);
+        CollateralRecordedEvt {
+            invoice_id: escrow.invoice_id,
+            amount,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Return the current collateral pledge, if any.
+    pub fn get_sme_collateral_commitment(env: Env) -> Option<CollateralPledge> {
+        env.storage().instance().get(&DataKey::SmeCollateralPledge)
+    }
+
+    /// Retire a previously recorded collateral pledge.
+    ///
+    /// Metadata-only: no tokens are moved. Requires SME auth.
+    ///
+    /// Guard ordering (ADR-002):
+    /// 1. Read-only existence check — returns [`EscrowError::NoCollateralToClear`] if absent.
+    /// 2. `require_auth` on the SME address.
+    /// 3. Remove storage entry and emit [`CollateralClearedEvt`].
+    pub fn clear_sme_collateral_commitment(env: Env) -> Result<(), EscrowError> {
+        // 1. Read-only existence check (no auth yet).
+        let pledge: CollateralPledge = env
+            .storage()
+            .instance()
+            .get(&DataKey::SmeCollateralPledge)
+            .ok_or(EscrowError::NoCollateralToClear)?;
+
+        // 2. Load escrow and require SME auth.
+        let escrow = load_escrow_require_sme(&env)?;
+
+        // 3. Remove entry and emit retirement event.
+        env.storage()
+            .instance()
+            .remove(&DataKey::SmeCollateralPledge);
+        CollateralClearedEvt {
+            invoice_id: escrow.invoice_id,
+            amount: pledge.amount,
+        }
+        .publish(&env);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod tests;

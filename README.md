@@ -54,21 +54,33 @@ For CI and local checks you only need Rust and `cargo`.
 ```
 liquifact-contracts/
 ├── Cargo.toml           # Workspace definition
+├── docs/
+│   └── escrow-sme-collateral.md  # Collateral flow spec
 ├── escrow/
 │   ├── Cargo.toml       # Escrow contract crate
 │   └── src/
-│       ├── lib.rs       # LiquiFact escrow contract (init, fund, settle)
-│       └── test.rs      # Unit tests
+│       ├── lib.rs       # LiquiFact escrow contract
+│       ├── test.rs      # Legacy unit tests
+│       └── tests/
+│           ├── mod.rs
+│           └── coverage.rs  # Collateral flow coverage tests
 └── .github/workflows/
     └── ci.yml           # CI: fmt, build, test
 ```
 
-### Escrow contract (high level)
+### Escrow contract entrypoints
 
-- **init** — Create an invoice escrow (invoice id, SME address, amount, yield bps, maturity).
-- **get_escrow** — Read current escrow state.
-- **fund** — Record investor funding; status becomes “funded” when target is met.
-- **settle** — Mark escrow as settled (buyer paid; investors receive principal + yield).
+| Entrypoint | Auth | Description |
+|---|---|---|
+| `init` | — | Create an invoice escrow (invoice id, SME, amount, yield bps, maturity). |
+| `get_escrow` | — | Read current escrow state. |
+| `fund` | — | Record investor funding; status → funded when target is met. |
+| `settle` | — | Mark escrow as settled; investors receive principal + yield. |
+| `record_sme_collateral_commitment` | SME | Record off-chain collateral pledge (metadata only, no token movement). |
+| `get_sme_collateral_commitment` | — | Return current pledge record, or `None`. |
+| `clear_sme_collateral_commitment` | SME | Retire a recorded pledge; emits `CollateralClearedEvt`. Returns `NoCollateralToClear` if none exists. |
+
+See [`docs/escrow-sme-collateral.md`](docs/escrow-sme-collateral.md) for the full collateral flow spec.
 
 ---
 
