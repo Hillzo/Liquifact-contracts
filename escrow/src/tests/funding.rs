@@ -3263,3 +3263,514 @@ fn test_fund_batch_preserves_event_semantics() {
     // Each event corresponds to a fund operation
     // (Detailed event field verification depends on EscrowFunded structure)
 }
+
+// ── update_funding_deadline tests ─────────────────────────────────────────────
+
+/// Admin can set a funding deadline on an escrow that was initialized without one.
+#[test]
+fn test_update_funding_deadline_from_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_SET"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    assert_eq!(client.get_funding_deadline(), None);
+    assert!(!client.is_funding_expired());
+
+    let new_deadline = env.ledger().timestamp() + 500;
+    client.update_funding_deadline(&Some(new_deadline));
+
+    assert_eq!(client.get_funding_deadline(), Some(new_deadline));
+}
+
+/// Admin can extend an existing funding deadline to a later timestamp.
+#[test]
+fn test_update_funding_deadline_extends() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let initial_deadline = env.ledger().timestamp() + 1000;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_EXT"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(initial_deadline),
+    );
+
+    assert_eq!(client.get_funding_deadline(), Some(initial_deadline));
+
+    let extended = env.ledger().timestamp() + 2000;
+    client.update_funding_deadline(&Some(extended));
+
+    assert_eq!(client.get_funding_deadline(), Some(extended));
+}
+
+/// Admin can clear an existing funding deadline by passing None.
+#[test]
+fn test_update_funding_deadline_clears() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let initial_deadline = env.ledger().timestamp() + 1000;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_CLR"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(initial_deadline),
+    );
+
+    assert_eq!(client.get_funding_deadline(), Some(initial_deadline));
+
+    client.update_funding_deadline(&None);
+
+    assert_eq!(client.get_funding_deadline(), None);
+    assert!(!client.is_funding_expired());
+}
+
+/// Setting a deadline at or before the current ledger timestamp must be rejected
+/// with FundingDeadlinePassed (same validation as init).
+#[test]
+#[should_panic(expected = "FundingDeadlinePassed")]
+fn test_update_funding_deadline_past_timestamp_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_PAST"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let past = env.ledger().timestamp() - 1;
+    client.update_funding_deadline(&Some(past));
+}
+
+/// update_funding_deadline must be rejected when the escrow is not open (status != 0).
+#[test]
+#[should_panic(expected = "FundingDeadlineUpdateNotOpen")]
+fn test_update_funding_deadline_not_open_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_STATE"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Fund to reach status 1 (funded)
+    client.fund(&investor, &TARGET);
+    assert_eq!(client.get_escrow().status, 1);
+
+    let future = env.ledger().timestamp() + 1000;
+    client.update_funding_deadline(&Some(future));
+}
+
+/// update_funding_deadline must be rejected when the escrow is settled (status 2).
+#[test]
+#[should_panic(expected = "FundingDeadlineUpdateNotOpen")]
+fn test_update_funding_deadline_fails_when_settled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_SETL"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.fund(&investor, &TARGET);
+    client.settle(); // status 2
+
+    let future = env.ledger().timestamp() + 1000;
+    client.update_funding_deadline(&Some(future));
+}
+
+/// Only the admin may call update_funding_deadline; non-admin callers must be rejected.
+#[test]
+#[should_panic]
+fn test_update_funding_deadline_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_AUTH"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    env.mock_auths(&[]);
+    client.update_funding_deadline(&Some(env.ledger().timestamp() + 1000));
+}
+
+/// update_funding_deadline must emit FundingDeadlineUpdated with correct fields.
+#[test]
+fn test_update_funding_deadline_event_fields() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let initial_deadline = env.ledger().timestamp() + 500;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_EVT"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(initial_deadline),
+    );
+
+    let new_deadline = env.ledger().timestamp() + 1500;
+    client.update_funding_deadline(&Some(new_deadline));
+
+    assert_eq!(
+        env.events().all(),
+        std::vec![FundingDeadlineUpdated {
+            name: symbol_short!("fund_dl"),
+            invoice_id: client.get_escrow().invoice_id,
+            prior_deadline: Some(initial_deadline),
+            new_deadline: Some(new_deadline),
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+/// Setting a deadline from None must emit prior_deadline = None in the event.
+#[test]
+fn test_update_funding_deadline_event_from_none() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_EVTN"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let new_deadline = env.ledger().timestamp() + 1500;
+    client.update_funding_deadline(&Some(new_deadline));
+
+    assert_eq!(
+        env.events().all(),
+        std::vec![FundingDeadlineUpdated {
+            name: symbol_short!("fund_dl"),
+            invoice_id: client.get_escrow().invoice_id,
+            prior_deadline: None,
+            new_deadline: Some(new_deadline),
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+/// Clearing the deadline must emit prior_deadline = Some(old) and new_deadline = None.
+#[test]
+fn test_update_funding_deadline_clear_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = deploy_with_id(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let initial_deadline = env.ledger().timestamp() + 1000;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_EVTC"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(initial_deadline),
+    );
+
+    client.update_funding_deadline(&None);
+
+    assert_eq!(
+        env.events().all(),
+        std::vec![FundingDeadlineUpdated {
+            name: symbol_short!("fund_dl"),
+            invoice_id: client.get_escrow().invoice_id,
+            prior_deadline: Some(initial_deadline),
+            new_deadline: None,
+        }
+        .to_xdr(&env, &contract_id)]
+    );
+}
+
+/// is_funding_expired must reflect the updated deadline: false when deadline is extended,
+/// true when ledger advances past the new deadline.
+#[test]
+fn test_is_funding_expired_reflects_updated_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_EXP"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(env.ledger().timestamp() + 100),
+    );
+
+    // Not expired yet
+    assert!(!client.is_funding_expired());
+
+    // Extend deadline well into the future
+    client.update_funding_deadline(&Some(env.ledger().timestamp() + 10_000));
+    assert!(!client.is_funding_expired());
+
+    // Advance ledger past the original deadline but before the new one — still not expired
+    env.ledger().with_mut(|l| l.timestamp += 500);
+    assert!(!client.is_funding_expired());
+
+    // Advance past the new deadline — now expired
+    env.ledger().with_mut(|l| l.timestamp += 10_000);
+    assert!(client.is_funding_expired());
+}
+
+/// is_funding_expired must return false after the deadline is cleared.
+#[test]
+fn test_is_funding_expired_false_after_clear() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let deadline = env.ledger().timestamp() + 100;
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_EXPN"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(deadline),
+    );
+
+    // Advance past the deadline — would be expired
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    assert!(client.is_funding_expired());
+
+    // Clear the deadline — no deadline means never expired
+    client.update_funding_deadline(&None);
+    assert!(!client.is_funding_expired());
+}
+
+/// A second update_funding_deadline call must overwrite the previous value correctly.
+#[test]
+fn test_update_funding_deadline_twice_overwrites() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "DL_2X"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let d1 = env.ledger().timestamp() + 500;
+    let d2 = env.ledger().timestamp() + 1500;
+    client.update_funding_deadline(&Some(d1));
+    assert_eq!(client.get_funding_deadline(), Some(d1));
+
+    client.update_funding_deadline(&Some(d2));
+    assert_eq!(client.get_funding_deadline(), Some(d2));
+}

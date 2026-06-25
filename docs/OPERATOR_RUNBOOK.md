@@ -153,6 +153,29 @@ construction. See [ADR-007](adr/ADR-007-storage-key-evolution.md) for the
 storage-key evolution policy. Operators must redeploy if `InvoiceEscrow` layout
 changes.
 
+### Exhaustive test coverage for `migrate()`
+
+The unit test suite in `escrow/src/tests/admin.rs` exercises every documented
+error branch end-to-end:
+
+- **Auth-first ordering** — `test_migrate_rejects_non_admin_before_version_check`
+  asserts that a non-admin caller is rejected with an auth failure, never
+  reaching the version guards.
+- **`MigrationVersionMismatch`** — `test_migrate_version_mismatch_stored_neq_claimed`
+  and `test_migrate_far_below_stored_raises_mismatch` cover the exact-mismatch
+  guard and assert `DataKey::Version` is untouched.
+- **`AlreadyCurrentSchemaVersion`** — `test_migrate_at_schema_version_raises_already_current`
+  and `test_migrate_above_schema_version_raises_already_current` cover the
+  boundary (`from_version == SCHEMA_VERSION`) and the above-boundary case.
+- **`NoMigrationPath`** — `test_migrate_below_schema_version_matching_stored_raises_no_path`,
+  `test_migrate_all_historical_versions_raise_no_path` (v1–v5), and
+  `test_migrate_from_zero_uninitialized_raises_no_path` cover every
+  below-`SCHEMA_VERSION` path with a matching stored version, including the
+  absent-key default (`0`).
+- **Version immutability** — `test_migrate_version_immutable_across_all_error_branches`
+  sweep-covers representative values from each branch and asserts
+  `DataKey::Version` is unchanged on every failed call.
+
 ### Current `migrate()` panic policy
 
 This table must match the `migrate` rustdoc in `escrow/src/lib.rs`.

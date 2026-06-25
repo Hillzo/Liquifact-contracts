@@ -365,7 +365,9 @@ pub enum EscrowError {
     NoPendingAdmin = 163,
     /// The contract's funding-token balance is less than `funded_amount` at withdraw time.
     /// Funds must be custodied in this contract before the SME can pull them.
-    InsufficientContractBalance = 164,
+    InsufficientContractBalance = 165,
+    /// [`LiquifactEscrow::update_funding_deadline`] called while escrow is not open.
+    FundingDeadlineUpdateNotOpen = 166,
 }
 
 #[inline(always)]
@@ -735,6 +737,16 @@ pub struct FundingTargetUpdated {
     pub invoice_id: Symbol,
     pub old_target: i128,
     pub new_target: i128,
+}
+
+#[contractevent]
+pub struct FundingDeadlineUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub prior_deadline: Option<u64>,
+    pub new_deadline: Option<u64>,
 }
 
 #[contractevent]
@@ -1999,6 +2011,68 @@ impl LiquifactEscrow {
         escrow
     }
 
+    /// Update or clear the optional funding deadline while the escrow is still **open** (status == 0).
+    ///
+    /// Only the current [`InvoiceEscrow::admin`] may call. This is the only entrypoint that
+    /// mutates [`DataKey::FundingDeadline`] after [`LiquifactEscrow::init`].
+    ///
+    /// # Parameters
+    ///
+    /// - `new_deadline`: `Some(u64)` sets a new ledger timestamp; `None` removes the deadline.
+    ///
+    /// # Validation
+    ///
+    /// - Admin authorization required.
+    /// - Escrow must be in **open** state (`status == 0`).
+    /// - When `Some(d)`: `d` must be strictly greater than the current ledger timestamp
+    ///   (same rule as [`LiquifactEscrow::init`]).
+    /// - When `None`: the stored [`DataKey::FundingDeadline`] is removed; funding becomes
+    ///   unrestricted by time.
+    ///
+    /// # Events
+    ///
+    /// Emits [`FundingDeadlineUpdated`] with the prior and new deadline values.
+    ///
+    /// # Errors
+    ///
+    /// | Condition | Typed error |
+    /// |-----------|-------------|
+    /// | Escrow not open | [`EscrowError::FundingDeadlineUpdateNotOpen`] |
+    /// | `Some(d)` and `d <= now` | [`EscrowError::FundingDeadlinePassed`] |
+    pub fn update_funding_deadline(env: Env, new_deadline: Option<u64>) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        ensure(
+            &env,
+            escrow.status == 0,
+            EscrowError::FundingDeadlineUpdateNotOpen,
+        );
+
+        let prior: Option<u64> = env.storage().instance().get(&DataKey::FundingDeadline);
+
+        match new_deadline {
+            Some(d) => {
+                ensure(
+                    &env,
+                    d > env.ledger().timestamp(),
+                    EscrowError::FundingDeadlinePassed,
+                );
+                env.storage().instance().set(&DataKey::FundingDeadline, &d);
+            }
+            None => {
+                env.storage().instance().remove(&DataKey::FundingDeadline);
+            }
+        }
+
+        FundingDeadlineUpdated {
+            name: symbol_short!("fund_dl"),
+            invoice_id: escrow.invoice_id.clone(),
+            prior_deadline: prior,
+            new_deadline,
+        }
+        .publish(&env);
+    }
+
     /// Lower the configured distinct-investor cap while the escrow is still open.
     ///
     /// This is admin-only and intentionally cannot raise a cap or impose one on an unlimited
@@ -2201,11 +2275,7 @@ impl LiquifactEscrow {
         let n = entries.len();
 
         ensure(&env, n > 0, EscrowError::FundingBatchEmpty);
-        ensure(
-            &env,
-            n <= MAX_FUND_BATCH,
-            EscrowError::FundingBatchTooLarge,
-        );
+        ensure(&env, n <= MAX_FUND_BATCH, EscrowError::FundingBatchTooLarge);
 
         let mut escrow = Self::get_escrow(env.clone());
 
@@ -2987,7 +3057,7 @@ impl LiquifactEscrow {
             .unwrap_or(false)
     }
 
-    /// Total principal already returned to investors via [`LiquifactEscrow::refund`].
+    /// Returns the total principal already returned to investors via [`LiquifactEscrow::refund`].
     ///
     /// Used by [`LiquifactEscrow::sweep_terminal_dust`] to compute outstanding liabilities.
     /// Absent ⇒ `0` (no refunds have occurred).
@@ -2996,6 +3066,33 @@ impl LiquifactEscrow {
             .instance()
             .get(&DataKey::DistributedPrincipal)
             .unwrap_or(0)
+    }
+
+    /// Returns the contract's current funding-token balance for on-chain custody reconciliation.
+    ///
+    /// Reads the bound funding token via [`DataKey::FundingToken`] and queries its balance
+    /// at the contract's address. This enables auditors to reconcile on-chain custody against
+    /// funded_amount and distributed_principal.
+    ///
+    /// **Reconciliation formula for cancelled escrows:**
+    /// ```text
+    /// outstanding_liability = funded_amount - distributed_principal
+    /// excess_balance = balance - outstanding_liability  // tokens available for sweep
+    /// ```
+    ///
+    /// # Errors
+    /// - [`EscrowError::FundingTokenNotSet`] if the escrow has not been initialized.
+    ///
+    /// # Authorization
+    /// None — pure read; no auth required.
+    ///
+    /// # Security
+    /// This is a view-only entrypoint: it performs no storage writes and does not invoke
+    /// any sensitive operations. It safely exposes on-chain state for auditing purposes.
+    pub fn get_token_balance(env: Env) -> i128 {
+        let token_addr = Self::funding_token_or_fail(&env);
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &token_addr).balance(&this)
     }
 }
 

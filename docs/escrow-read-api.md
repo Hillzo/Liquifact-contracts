@@ -176,12 +176,44 @@ Returns the single-set 32-byte attestation digest, or `None` when unbound.
 
 ---
 
-## `get_attestation_append_log() → Vec<BytesN<32>>`
+## `get_distributed_principal() → i128`
 
-**Storage key:** `DataKey::AttestationAppendLog`
+**Storage key:** `DataKey::DistributedPrincipal`
 
-Returns the append-only audit chain of digests. Returns an empty `Vec` when no entries exist.
-Bounded by `MAX_ATTESTATION_APPEND_ENTRIES`.
+Returns the total principal already returned to investors via [`LiquifactEscrow::refund`].
+
+- Used by [`LiquifactEscrow::sweep_terminal_dust`] to compute outstanding liabilities.
+- Absent ⇒ `0` (no refunds have occurred).
+
+---
+
+## `get_token_balance() → i128`
+
+**Storage key:** None (reads [`DataKey::FundingToken`] and queries token contract)
+
+Returns the contract's current funding-token balance for on-chain custody reconciliation.
+
+- Emits [`EscrowError::FundingTokenNotSet`] if called before `init`.
+- **Pure read** — no authorization required, no state mutation.
+
+### Reconciliation relationship
+
+Auditors can reconcile on-chain custody against recorded liabilities:
+
+```
+balance = get_token_balance()
+funded_amount = get_escrow().funded_amount
+distributed_principal = get_distributed_principal()
+
+outstanding_liability = funded_amount - distributed_principal
+excess_balance = balance - outstanding_liability  // tokens available for sweep
+
+// After the cancelled escrow's liability is fully discharged (all refunds complete):
+// balance == distributed_principal == funded_amount  (or less if partial sweep occurred)
+```
+
+This view surfaces the balance already consulted internally by [`LiquifactEscrow::sweep_terminal_dust`]
+and [`LiquifactEscrow::withdraw`] for liability-floor enforcement.
 
 ---
 

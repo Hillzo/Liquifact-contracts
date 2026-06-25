@@ -2,7 +2,8 @@ use super::super::external_calls::transfer_funding_token_with_balance_checks;
 use super::*;
 use crate::{CollateralRecordedEvt, DataKey, InvoiceEscrow, LegalHoldChanged};
 use soroban_sdk::{
-    contract, contractimpl, vec, IntoVal, Map, MuxedAddress, Symbol, TryFromVal, Val,
+    contract, contractimpl, vec, token::StellarAssetClient, IntoVal, Map, MuxedAddress, Symbol,
+    TryFromVal, Val,
 };
 
 // External-call and token-integration assumptions that should stay separate
@@ -890,12 +891,14 @@ fn withdraw_transfers_funded_amount_to_sme() {
     env.mock_all_auths();
 
     let target = 50_000_000i128;
-    let (client, escrow_id, token, sme) =
-        setup_withdraw_with_token(&env, target, "WD_BAL001");
+    let (client, escrow_id, token, sme) = setup_withdraw_with_token(&env, target, "WD_BAL001");
 
     let sme_before = token.balance(&sme);
     let contract_before = token.balance(&escrow_id);
-    assert_eq!(contract_before, target, "escrow must hold exactly funded_amount before withdraw");
+    assert_eq!(
+        contract_before, target,
+        "escrow must hold exactly funded_amount before withdraw"
+    );
 
     client.withdraw();
 
@@ -911,7 +914,11 @@ fn withdraw_transfers_funded_amount_to_sme() {
         contract_after, 0,
         "escrow contract balance must be zero after disbursement"
     );
-    assert_eq!(client.get_escrow().status, 3u32, "status must be 3 after withdraw");
+    assert_eq!(
+        client.get_escrow().status,
+        3u32,
+        "status must be 3 after withdraw"
+    );
 }
 
 /// `withdraw` increments `DistributedPrincipal` by `funded_amount`.
@@ -921,8 +928,7 @@ fn withdraw_updates_distributed_principal() {
     env.mock_all_auths();
 
     let target = 20_000_000i128;
-    let (client, _escrow_id, _token, _sme) =
-        setup_withdraw_with_token(&env, target, "WD_DP001");
+    let (client, _escrow_id, _token, _sme) = setup_withdraw_with_token(&env, target, "WD_DP001");
 
     client.withdraw();
 
@@ -1058,8 +1064,7 @@ fn withdraw_event_includes_recipient() {
     env.mock_all_auths();
 
     let target = 5_000_000i128;
-    let (client, escrow_id, _token, sme) =
-        setup_withdraw_with_token(&env, target, "WD_EV001");
+    let (client, escrow_id, _token, sme) = setup_withdraw_with_token(&env, target, "WD_EV001");
 
     client.withdraw();
 
@@ -1074,9 +1079,311 @@ fn withdraw_event_includes_recipient() {
     .to_xdr(&env, &escrow_id);
 
     let all_events = env.events().all().filter_by_contract(&escrow_id);
-    let found = all_events
-        .events()
-        .iter()
-        .any(|e| *e == expected_xdr);
-    assert!(found, "SmeWithdrew event with correct recipient and amount must be emitted");
+    let found = all_events.events().iter().any(|e| *e == expected_xdr);
+    assert!(
+        found,
+        "SmeWithdrew event with correct recipient and amount must be emitted"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Token balance view integration tests (issue #391)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Helper: create a cancelled escrow with real SAC token, mint tokens to contract.
+fn setup_cancelled_with_token(
+    env: &Env,
+    target: i128,
+    invoice_id: &str,
+) -> (
+    LiquifactEscrowClient<'_>,
+    soroban_sdk::Address,
+    TokenClient<'_>,
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+) {
+    use crate::LiquifactEscrow;
+
+    let sac = env.register_stellar_asset_contract_v2(soroban_sdk::Address::generate(env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(env, &token_id);
+    let token = TokenClient::new(env, &token_id);
+
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(env, &escrow_id);
+    let admin = soroban_sdk::Address::generate(env);
+    let sme = soroban_sdk::Address::generate(env);
+    let treasury = soroban_sdk::Address::generate(env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(env, invoice_id),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = soroban_sdk::Address::generate(env);
+    client.fund(&investor, &target);
+
+    // Mint into the contract so balance can be verified
+    sac_admin.mint(&escrow_id, &target);
+
+    // Cancel to reach terminal state for refund/sweep testing
+    client.cancel_funding();
+
+    (client, escrow_id, token, sme, investor)
+}
+
+/// `get_token_balance` returns `FundingTokenNotSet` error when escrow not initialized.
+#[test]
+fn test_get_token_balance_fails_when_not_initialized() {
+    let env = Env::default();
+    let client = deploy(&env);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.get_token_balance()
+    }));
+    assert!(
+        result.is_err(),
+        "get_token_balance must fail when funding token not set"
+    );
+}
+
+/// `get_token_balance` returns correct balance after init and mint.
+#[test]
+fn test_get_token_balance_matches_token_balance_after_fund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let target = 100_000_000i128;
+    let sac = env.register_stellar_asset_contract_v2(soroban_sdk::Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+    let token = TokenClient::new(&env, &token_id);
+
+    let escrow_id = deploy_id(&env);
+    let client = LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // Before init: FundingTokenNotSet error
+    let not_init_result = client.try_get_token_balance();
+    assert!(
+        not_init_result.is_err(),
+        "get_token_balance should fail before init"
+    );
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "BAL_TEST_001"),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // After init but before mint: balance is zero
+    let balance_before = client.get_token_balance();
+    assert_eq!(
+        balance_before, 0,
+        "Balance should be zero before tokens minted to contract"
+    );
+    assert_eq!(token.balance(&escrow_id), 0, "Token client should agree");
+
+    // Mint tokens into contract
+    sac_admin.mint(&escrow_id, &target);
+    let balance_after = client.get_token_balance();
+    assert_eq!(
+        balance_after, target,
+        "get_token_balance should match token contract balance after mint"
+    );
+    assert_eq!(token.balance(&escrow_id), target);
+
+    // Fund: balance unchanged (funding transfers tokens in separately)
+    let investor = Address::generate(&env);
+    client.fund(&investor, &target);
+    let balance_post_fund = client.get_token_balance();
+    assert_eq!(
+        balance_post_fund, target,
+        "Balance unchanged after fund (tokens are metadata-only)"
+    );
+}
+
+/// `get_token_balance` reflects balance after sweep_terminal_dust.
+#[test]
+fn test_get_token_balance_updates_after_sweep() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Setup: single investor, contract holds funded amount + surplus dust
+    let target = 50_000_000i128;
+    let dust = 1_000_000i128; // extra tokens for dust sweep test
+    let sac = env.register_stellar_asset_contract_v2(soroban_sdk::Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+    let token = TokenClient::new(&env, &token_id);
+
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = soroban_sdk::Address::generate(&env);
+    let sme = soroban_sdk::Address::generate(&env);
+    let treasury = soroban_sdk::Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "BAL_SWEEP_001"),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = soroban_sdk::Address::generate(&env);
+    client.fund(&investor, &target);
+
+    // Mint funded amount + surplus dust
+    sac_admin.mint(&escrow_id, &(target + dust));
+
+    // Cancel to reach terminal state
+    client.cancel_funding();
+
+    // After mint and cancel: balance = funded + dust
+    let balance_initial = client.get_token_balance();
+    assert_eq!(balance_initial, target + dust, "Balance = funded + dust");
+    assert_eq!(token.balance(&escrow_id), target + dust);
+
+    // Refund investor reduces balance by funded amount, leaving only dust
+    client.refund(&investor);
+
+    let balance_after_refund = client.get_token_balance();
+    assert_eq!(balance_after_refund, dust, "Balance = dust after refund");
+
+    // Perform dust sweep - sweep dust amount
+    let swept = client.sweep_terminal_dust(&dust);
+    assert_eq!(swept, dust, "Dust sweep returns dust amount");
+
+    // Balance should now be zero
+    let balance_final = client.get_token_balance();
+    assert_eq!(balance_final, 0, "Balance zero after sweep");
+    assert_eq!(token.balance(&escrow_id), 0);
+}
+
+/// `get_token_balance` reconciles with funded_amount - distributed_principal.
+#[test]
+fn test_get_token_balance_reconciliation_with_distributed_principal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Two investors: only refund one, leaving partial liability + partial excess balance
+    let target = 100_000_000i128;
+    let sac = env.register_stellar_asset_contract_v2(soroban_sdk::Address::generate(&env));
+    let token_id = sac.address();
+    let sac_admin = StellarAssetClient::new(&env, &token_id);
+
+    let escrow_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &escrow_id);
+    let admin = soroban_sdk::Address::generate(&env);
+    let sme = soroban_sdk::Address::generate(&env);
+    let treasury = soroban_sdk::Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "BAL_RECON_001"),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &token_id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Two investors split the funding
+    let investor1 = soroban_sdk::Address::generate(&env);
+    let investor2 = soroban_sdk::Address::generate(&env);
+    let half = target / 2;
+    client.fund(&investor1, &half);
+    client.fund(&investor2, &half);
+
+    // Mint surplus: contract holds funded_amount + extra dust
+    let dust = 1_000_000i128; // extra tokens not from funding
+    sac_admin.mint(&escrow_id, &(target + dust)); // funded + surplus
+
+    // Cancel to reach terminal state
+    client.cancel_funding();
+
+    let escrow = client.get_escrow();
+    let funded_amount = escrow.funded_amount;
+    let distributed_initial = client.get_distributed_principal();
+
+    // Initial: balance = funded + dust, outstanding = funded, excess = dust
+    let balance = client.get_token_balance();
+    let outstanding_initial = funded_amount - distributed_initial;
+    assert_eq!(outstanding_initial, target, "Outstanding = funded before refunds");
+    assert_eq!(balance, target + dust, "Contract holds funded + surplus");
+
+    // Refund investor1 (half) - reduce liability but leave some balance
+    client.refund(&investor1);
+
+    let balance_mid = client.get_token_balance();
+    let distributed_mid = client.get_distributed_principal();
+    let outstanding_mid = funded_amount - distributed_mid;
+
+    assert_eq!(distributed_mid, half, "Distributed principal = half funded");
+    assert_eq!(outstanding_mid, half, "Outstanding reduced to half");
+    assert_eq!(balance_mid, half + dust, "Balance = remaining liability + dust");
+
+    // Sweep exactly the dust (excess above liability floor)
+    client.sweep_terminal_dust(&dust);
+
+    let balance_final = client.get_token_balance();
+    assert_eq!(balance_final, outstanding_mid, "Balance = outstanding after dust sweep");
+
+    // Verify: balance - outstanding == 0 (no excess dust remains)
+    assert_eq!(
+        balance_final - outstanding_mid,
+        0,
+        "No excess dust after sweep to liability floor"
+    );
+
+    // Refund remaining investor, balance goes to zero
+    client.refund(&investor2);
+    let balance_zero = client.get_token_balance();
+    assert_eq!(balance_zero, 0, "Balance zero after all refunds");
 }
