@@ -1,9 +1,9 @@
-//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
+﻿//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
 //! `append_attestation_digest` (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
 //!
 //! These tests prove the two chain-anchor invariants:
-//! 1. The primary hash is **write-once** — a second bind panics regardless of the digest value.
-//! 2. The append log is **capacity-bounded** — the 33rd entry panics; the 32nd succeeds.
+//! 1. The primary hash is **write-once** ÔÇö a second bind panics regardless of the digest value.
+//! 2. The append log is **capacity-bounded** ÔÇö the 33rd entry panics; the 32nd succeeds.
 //!
 //! Neither entrypoint stores ZK proofs or performs off-chain verification. They record a
 //! 32-byte digest (e.g. SHA-256 of an IPFS CID or a KYC/KYB document bundle) so that
@@ -29,7 +29,7 @@ fn setup_with_init(env: &Env) -> (LiquifactEscrowClient<'_>, Address) {
 }
 
 // ---------------------------------------------------------------------------
-// bind_primary_attestation_hash — single-set invariant
+// bind_primary_attestation_hash ÔÇö single-set invariant
 // ---------------------------------------------------------------------------
 
 /// Happy path: first bind succeeds and is readable via the getter.
@@ -50,7 +50,7 @@ fn test_get_primary_hash_none_before_bind() {
     assert_eq!(client.get_primary_attestation_hash(), None);
 }
 
-/// A second bind with the **same** digest must panic — single-set is unconditional.
+/// A second bind with the **same** digest must panic ÔÇö single-set is unconditional.
 #[test]
 #[should_panic]
 fn test_bind_primary_hash_same_digest_panics() {
@@ -61,7 +61,7 @@ fn test_bind_primary_hash_same_digest_panics() {
     client.bind_primary_attestation_hash(&d);
 }
 
-/// A second bind with a **different** digest must also panic — no replacement allowed.
+/// A second bind with a **different** digest must also panic ÔÇö no replacement allowed.
 #[test]
 #[should_panic]
 fn test_bind_primary_hash_different_digest_panics() {
@@ -83,7 +83,7 @@ fn test_bind_primary_hash_non_admin_panics() {
 }
 
 // ---------------------------------------------------------------------------
-// append_attestation_digest — bounded log invariant
+// append_attestation_digest ÔÇö bounded log invariant
 // ---------------------------------------------------------------------------
 
 /// Empty log before any append.
@@ -121,7 +121,7 @@ fn test_append_multiple_entries_ordered() {
     }
 }
 
-/// The 32nd entry (index 31) succeeds — boundary must be inclusive.
+/// The 32nd entry (index 31) succeeds ÔÇö boundary must be inclusive.
 #[test]
 fn test_append_exactly_max_entries_succeeds() {
     let env = Env::default();
@@ -136,7 +136,7 @@ fn test_append_exactly_max_entries_succeeds() {
     );
 }
 
-/// The 33rd entry must panic — capacity is strictly bounded.
+/// The 33rd entry must panic ÔÇö capacity is strictly bounded.
 #[test]
 #[should_panic]
 fn test_append_beyond_max_panics() {
@@ -148,7 +148,7 @@ fn test_append_beyond_max_panics() {
     }
 }
 
-/// Duplicate digests are allowed — the log is an audit trail, not a set.
+/// Duplicate digests are allowed ÔÇö the log is an audit trail, not a set.
 #[test]
 fn test_append_duplicate_digest_allowed() {
     let env = Env::default();
@@ -207,7 +207,7 @@ fn test_primary_and_append_coexist() {
 }
 
 // ---------------------------------------------------------------------------
-// revoke_attestation_digest — revocation tombstone invariant
+// revoke_attestation_digest ÔÇö revocation tombstone invariant
 // ---------------------------------------------------------------------------
 
 /// Happy path: revoke index 0 and confirm via `is_attestation_revoked`.
@@ -302,7 +302,7 @@ fn test_revoke_non_admin_panics() {
     client.revoke_attestation_digest(&0);
 }
 
-/// Revocation does not alter the append log contents — the digest remains readable.
+/// Revocation does not alter the append log contents ÔÇö the digest remains readable.
 #[test]
 fn test_revoke_preserves_log_entry() {
     let env = Env::default();

@@ -1,4 +1,4 @@
-use super::{
+﻿use super::{
     AllowlistEnabledChanged, DataKey, InvestorAllowlistChanged, LiquifactEscrow,
     LiquifactEscrowClient,
 };
@@ -239,7 +239,7 @@ fn test_fund_allowed_when_allowlist_disabled() {
     let client = deploy(&env);
     init(&env, &client);
     let investor = Address::generate(&env);
-    // Allowlist off — anyone can fund.
+    // Allowlist off ÔÇö anyone can fund.
     let escrow = client.fund(&investor, &5_000i128);
     assert_eq!(escrow.funded_amount, 5_000i128);
 }
@@ -251,7 +251,7 @@ fn test_fund_with_commitment_allowed_when_allowlist_disabled() {
     let client = deploy(&env);
     init(&env, &client);
     let investor = Address::generate(&env);
-    // Allowlist off — anyone can fund with commitment.
+    // Allowlist off ÔÇö anyone can fund with commitment.
     let escrow = client.fund_with_commitment(&investor, &5_000i128, &0u64);
     assert_eq!(escrow.funded_amount, 5_000i128);
 }
@@ -323,7 +323,7 @@ fn test_fund_allowed_after_disable_even_without_entry() {
     client.set_allowlist_active(&true);
     client.set_allowlist_active(&false);
 
-    // Gate is off — investor not in list but can still fund.
+    // Gate is off ÔÇö investor not in list but can still fund.
     let escrow = client.fund(&investor, &3_000i128);
     assert_eq!(escrow.funded_amount, 3_000i128);
 }
@@ -341,7 +341,7 @@ fn test_entries_persist_across_disable_reenable() {
     client.set_allowlist_active(&false);
     // Entry still there even while disabled.
     assert!(client.is_investor_allowlisted(&investor));
-    // Re-enable — investor can still fund without re-adding.
+    // Re-enable ÔÇö investor can still fund without re-adding.
     client.set_allowlist_active(&true);
     let escrow = client.fund(&investor, &2_000i128);
     assert_eq!(escrow.funded_amount, 2_000i128);
