@@ -18,14 +18,14 @@
 
 #[cfg(test)]
 use super::{
-    default_init, deploy, deploy_with_id, free_addresses, install_stellar_asset_token, setup,
-    MAX_DUST_SWEEP_AMOUNT, TARGET,
+    assert_contract_error, default_init, deploy, deploy_with_id, free_addresses,
+    install_stellar_asset_token, setup, StellarTestToken, MAX_DUST_SWEEP_AMOUNT, TARGET,
 };
-use crate::LiquifactEscrow;
+use crate::{EscrowError, EscrowSettled, LiquifactEscrow, YieldTier};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
     token::StellarAssetClient,
-    Address, Env, String,
+    Address, Env, Event, String, Vec as SorobanVec,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1664,4 +1664,272 @@ fn test_funding_blocked_after_partial_settle() {
 
     let late_investor = Address::generate(&env);
     client.fund(&late_investor, &1_000i128);
+}
+
+// ── get_settled_at tests ──────────────────────────────────────────────────────
+
+/// `get_settled_at` returns `None` before the escrow is settled (pre-settle state).
+#[test]
+fn settled_at_is_none_before_settle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    // Not yet funded — should be None.
+    assert!(
+        client.get_settled_at().is_none(),
+        "settled_at must be None before settle"
+    );
+
+    // Fund to target (status 1) — still None.
+    fund_to_target(&client, &env);
+    assert!(
+        client.get_settled_at().is_none(),
+        "settled_at must be None after funding, before settle"
+    );
+}
+
+/// `get_settled_at` returns `Some(timestamp)` equal to the ledger time at `settle()`.
+#[test]
+fn settled_at_recorded_at_settle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    let settle_ts: u64 = 9_999;
+    env.ledger().with_mut(|l| l.timestamp = settle_ts);
+    client.settle();
+
+    let stored = client
+        .get_settled_at()
+        .expect("settled_at must be Some after settle");
+    assert_eq!(
+        stored, settle_ts,
+        "settled_at must equal the ledger timestamp at settle()"
+    );
+}
+
+/// `get_settled_at` value is stable — subsequent reads return the same timestamp.
+#[test]
+fn settled_at_is_stable_after_settle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    let settle_ts: u64 = 42_000;
+    env.ledger().with_mut(|l| l.timestamp = settle_ts);
+    client.settle();
+
+    // Advance ledger — stored value must not change.
+    env.ledger().with_mut(|l| l.timestamp = settle_ts + 10_000);
+    let stored = client
+        .get_settled_at()
+        .expect("settled_at must remain Some");
+    assert_eq!(
+        stored, settle_ts,
+        "settled_at must not change after additional ledger advancement"
+    );
+}
+
+/// `settle()` with maturity = 0 (no time-lock) still records the correct timestamp.
+#[test]
+fn settled_at_recorded_no_maturity_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    // default_init uses maturity=0 (no lock).
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    let ts: u64 = 1_234_567;
+    env.ledger().with_mut(|l| l.timestamp = ts);
+    client.settle();
+
+    assert_eq!(
+        client.get_settled_at(),
+        Some(ts),
+        "settled_at must be recorded even when maturity == 0"
+    );
+}
+
+/// `settle()` with a positive maturity records the timestamp at the moment the call succeeds.
+#[test]
+fn settled_at_recorded_with_maturity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+
+    let maturity: u64 = 5_000;
+    // Initialize with a maturity lock.
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token_id = sac.address();
+    let (admin_addr, sme_addr) = free_addresses(&env);
+    client.init(
+        &admin_addr,
+        &sme_addr,
+        &100_000i128,
+        &TARGET,
+        &500i64,
+        &maturity,
+        &token_id,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    install_stellar_asset_token(&env, &sac, &investor, TARGET);
+    client.fund(&investor, &TARGET);
+
+    // Advance ledger past maturity.
+    let settle_ts = maturity + 100;
+    env.ledger().with_mut(|l| l.timestamp = settle_ts);
+    client.settle();
+
+    assert_eq!(
+        client.get_settled_at(),
+        Some(settle_ts),
+        "settled_at must equal the ledger timestamp when settle() succeeds with maturity gate"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// fund_with_commitment claim-lock interaction with maturity and settlement
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A committed investor's `claim_investor_payout` is blocked with
+/// `InvestorCommitmentLockNotExpired` until `now >= InvestorClaimNotBefore`,
+/// even after the escrow has settled.
+#[test]
+fn test_commitment_claim_blocked_after_settle_before_lock() {
+    let env = Env::default();
+    let (client, token, contract_id, _treasury) =
+        setup_claim_env(&env, "CLT001", 1_000i128, 400i64);
+    let inv = Address::generate(&env);
+
+    env.ledger().set_timestamp(1000);
+
+    client.fund_with_commitment(&inv, &1_000i128, &500u64);
+    token.stellar.mint(&contract_id, &1_040i128);
+    client.settle();
+
+    // Lock expires at 1500; try claim at 1200 — must be blocked.
+    env.ledger().set_timestamp(1200);
+    assert_contract_error(
+        client.try_claim_investor_payout(&inv),
+        EscrowError::InvestorCommitmentLockNotExpired,
+    );
+
+    // Advance past lock expiry — claim succeeds.
+    env.ledger().set_timestamp(1500);
+    let balance_before = token.token.balance(&inv);
+    client.claim_investor_payout(&inv);
+    assert!(client.is_investor_claimed(&inv));
+    assert_eq!(token.token.balance(&inv) - balance_before, 1_040i128);
+}
+
+/// `fund_with_commitment` rejects a second commitment deposit from the same
+/// investor with `TieredSecondDeposit`.
+#[test]
+fn test_commitment_second_deposit_rejected() {
+    let env = Env::default();
+    let (client, _token, _contract_id, _treasury) =
+        setup_claim_env(&env, "CLT002", 2_000i128, 400i64);
+    let inv = Address::generate(&env);
+
+    client.fund_with_commitment(&inv, &1_000i128, &100u64);
+    assert_contract_error(
+        client.try_fund_with_commitment(&inv, &1_000i128, &100u64),
+        EscrowError::TieredSecondDeposit,
+    );
+}
+
+/// `fund_with_commitment` rejects a commitment lock that extends past the
+/// escrow maturity with `CommitmentLockExceedsMaturity`.
+#[test]
+fn test_commitment_lock_past_maturity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let (_contract_id, client) = deploy_with_id(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    env.ledger().set_timestamp(1000);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CLT003"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &2000u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let inv = Address::generate(&env);
+    assert_contract_error(
+        client.try_fund_with_commitment(&inv, &1_000i128, &1001u64),
+        EscrowError::CommitmentLockExceedsMaturity,
+    );
+}
+
+/// `get_effective_yield_bps` returns the tier yield for an investor who
+/// committed with a lock matching a configured yield tier.
+#[test]
+fn test_commitment_effective_yield_reflects_tier() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let (_contract_id, client) = deploy_with_id(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let inv = Address::generate(&env);
+
+    let mut tiers: SorobanVec<YieldTier> = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 1000,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CLT004"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.fund_with_commitment(&inv, &5_000i128, &100u64);
+    assert_eq!(client.get_effective_yield_bps(&inv), 1000);
+    assert_eq!(
+        client.get_effective_yield_bps(&inv),
+        client.get_investor_yield_bps(&inv),
+    );
 }
