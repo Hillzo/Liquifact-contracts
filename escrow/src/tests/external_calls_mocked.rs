@@ -301,9 +301,7 @@ impl TokenInterface for RebasingToken {
         let from_bal = Self::balance(env.clone(), from.clone());
         let to_bal = Self::balance(env.clone(), to_addr.clone());
         env.storage().persistent().set(&from, &(from_bal - amount));
-        env.storage()
-            .persistent()
-            .set(&to_addr, &(to_bal + amount));
+        env.storage().persistent().set(&to_addr, &(to_bal + amount));
 
         // Rebasing effect: mint 10% extra to sender after transfer (simulates supply expansion)
         // This causes sender post-balance to be higher than expected, triggering underflow guard
@@ -365,7 +363,13 @@ fn test_rebasing_token_sender_increases_rejected() {
 
     // Panics: sender ends with 100 (1000 - 1000 + 100 rebasing) instead of 0
     // This triggers SenderBalanceUnderflow because from_before - from_after underflows
-    transfer_funding_token_with_balance_checks(&env, &rebase_token_id, &holder, &treasury, 1000i128);
+    transfer_funding_token_with_balance_checks(
+        &env,
+        &rebase_token_id,
+        &holder,
+        &treasury,
+        1000i128,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -390,9 +394,7 @@ impl TokenInterface for HookStealingToken {
         let from_bal = Self::balance(env.clone(), from.clone());
         let to_bal = Self::balance(env.clone(), to_addr.clone());
         env.storage().persistent().set(&from, &(from_bal - amount));
-        env.storage()
-            .persistent()
-            .set(&to_addr, &(to_bal + amount));
+        env.storage().persistent().set(&to_addr, &(to_bal + amount));
 
         // Hook effect: burn 10% of recipient's balance after transfer
         let burn_amount = amount / 10;
