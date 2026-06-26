@@ -360,6 +360,40 @@ Returns the pro-rata denominator snapshot captured exactly once when the escrow 
   - `closed_at_ledger_timestamp: u64` — Ledger timestamp of the funding transition.
   - `closed_at_ledger_sequence: u32` — Ledger sequence at transition.
 
+Historical alias of [`get_effective_yield_bps`](#get_effective_yield_bpsinvestor-address--i64) —
+same return value, documented around the per-investor storage slot.
+
+---
+
+## `get_effective_yield_bps(investor: Address) → i64`
+
+**Storage key:** `DataKey::InvestorEffectiveYield(investor)`, falling back to `DataKey::Escrow.yield_bps`
+
+Returns the **resolved effective yield (bps)** the investor would receive at settlement — exactly the
+rate `compute_investor_payout` applies when computing the coupon. The resolution is identical to the
+payout math:
+
+```text
+effective_yield_bps = InvestorEffectiveYield(investor)   // tier locked at first deposit
+                      .unwrap_or(escrow.yield_bps)        // else the escrow base yield
+```
+
+| Investor state | Returns |
+| --- | --- |
+| Tiered (funded via `fund_with_commitment`) | the tier `yield_bps` selected at first deposit |
+| Base-only / non-tiered | the escrow base `yield_bps` |
+| Unknown (never funded) | the escrow base `yield_bps` |
+
+### Stored vs resolved
+
+`DataKey::InvestorEffectiveYield` is the **stored** per-investor slot: present only after a tiered
+first deposit, absent otherwise. This view returns the **resolved** value — the stored slot when
+present, otherwise the base-yield fallback — so integrators read the same number the payout math uses
+without re-implementing the `unwrap_or` fallback themselves.
+
+`get_investor_yield_bps` returns the same value; prefer `get_effective_yield_bps` when the intent is
+"the rate `compute_investor_payout` will actually apply."
+
 ---
 
 ## Per-Investor State

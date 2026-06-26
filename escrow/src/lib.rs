@@ -408,7 +408,7 @@ pub enum EscrowError {
     /// Computing the legal-hold clear ready-at timestamp would overflow.
     LegalHoldClearDelayOverflow = 152,
     /// Funding deadline has passed, new deposits are rejected.
-    FundingDeadlinePassed = 165,
+    FundingDeadlinePassed = 153,
 
     /// A legal hold blocks rotating the beneficiary (SME) address.
     LegalHoldBlocksBeneficiaryRotation = 160,
@@ -1825,8 +1825,51 @@ impl LiquifactEscrow {
     ///
     /// Note: reads `DataKey::Escrow` for the base yield fallback; callers that already hold the
     /// escrow should prefer reading `DataKey::InvestorEffectiveYield` directly.
+    ///
+    /// # See also
+    ///
+    /// [`LiquifactEscrow::get_effective_yield_bps`] is a semantic alias that exposes the **resolved**
+    /// rate the payout math uses, with documentation framed around the
+    /// stored-tier-or-base resolution rather than the per-investor storage slot. The two views
+    /// return identical values for the same investor; prefer `get_effective_yield_bps` when the
+    /// intent is "the rate [`LiquifactEscrow::compute_investor_payout`] will actually apply."
     pub fn get_investor_yield_bps(env: Env, investor: Address) -> i64 {
         // env.clone(): env is used again after this call for the InvestorEffectiveYield read.
+        let escrow = Self::get_escrow(env.clone());
+        Self::get_persistent_investor_effective_yield(&env, investor.clone())
+            .unwrap_or(escrow.yield_bps)
+    }
+
+    /// Returns the **resolved effective yield (bps)** an investor would earn at settlement — exactly
+    /// the rate [`LiquifactEscrow::compute_investor_payout`] applies when computing the coupon.
+    ///
+    /// # Resolution (identical to `compute_investor_payout`)
+    ///
+    /// ```text
+    /// effective_yield_bps = InvestorEffectiveYield(investor)   // tier locked at first deposit
+    ///                       .unwrap_or(escrow.yield_bps)        // else the escrow base yield
+    /// ```
+    ///
+    /// - **Tiered investor**: returns the tier `yield_bps` selected at their first
+    ///   [`LiquifactEscrow::fund_with_commitment`] deposit (see [`DataKey::InvestorEffectiveYield`]).
+    /// - **Base-only / non-tiered investor**: returns the escrow base [`InvoiceEscrow::yield_bps`].
+    /// - **Unknown investor** (never funded): returns the escrow base [`InvoiceEscrow::yield_bps`],
+    ///   i.e. the rate they *would* receive at the base level — no per-investor slot exists yet.
+    ///
+    /// # Stored vs resolved (vs [`LiquifactEscrow::get_investor_yield_bps`])
+    ///
+    /// [`DataKey::InvestorEffectiveYield`] is the **stored** per-investor slot: present only after a
+    /// tiered first deposit, absent otherwise. This view returns the **resolved** value — the stored
+    /// slot when present, otherwise the base yield fallback — so integrators read the same number the
+    /// payout math uses without re-implementing the `unwrap_or` fallback themselves.
+    /// `get_investor_yield_bps` is a historical alias with the same return value.
+    ///
+    /// # Authorization
+    ///
+    /// None — pure read; no auth required and no state mutation.
+    pub fn get_effective_yield_bps(env: Env, investor: Address) -> i64 {
+        // env.clone(): env is used again after this call for the InvestorEffectiveYield read.
+        // Mirrors compute_investor_payout exactly: tier slot when set, else escrow base yield.
         let escrow = Self::get_escrow(env.clone());
         Self::get_persistent_investor_effective_yield(&env, investor.clone())
             .unwrap_or(escrow.yield_bps)

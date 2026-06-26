@@ -824,6 +824,202 @@ fn test_tier_selection_edges_base_vs_high_bucket() {
     assert_eq!(client.get_investor_yield_bps(&i_long), 850);
 }
 
+// --- get_effective_yield_bps: resolved tier-or-base view ---
+
+#[test]
+fn test_effective_yield_bps_tiered_returns_tier_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let inv = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 900,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 500,
+        yield_bps: 1100,
+    });
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "EFFY001"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    // Commit past the second tier threshold: resolved yield is the tier rate, not the base.
+    client.fund_with_commitment(&inv, &5_000i128, &500u64);
+    assert_eq!(client.get_effective_yield_bps(&inv), 1100);
+    // Stored getter agrees with the resolved view for a tiered investor.
+    assert_eq!(
+        client.get_effective_yield_bps(&inv),
+        client.get_investor_yield_bps(&inv)
+    );
+}
+
+#[test]
+fn test_effective_yield_bps_non_tiered_returns_base() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let inv = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    // No tier table configured: a plain fund stores no per-investor yield slot.
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "EFFY002"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&inv, &5_000i128);
+    // Falls back to the escrow base yield.
+    assert_eq!(client.get_effective_yield_bps(&inv), 800);
+    assert_eq!(
+        client.get_effective_yield_bps(&inv),
+        client.get_investor_yield_bps(&inv)
+    );
+}
+
+#[test]
+fn test_effective_yield_bps_unknown_investor_returns_base() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "EFFY003"),
+        &sme,
+        &10_000i128,
+        &750i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    // Address that never funded: no per-investor slot, so the base yield is returned.
+    assert_eq!(client.get_effective_yield_bps(&stranger), 750);
+}
+
+#[test]
+fn test_effective_yield_bps_zero_base_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let inv = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    // Zero base yield, no tiers: every resolution falls back to 0.
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "EFFY004"),
+        &sme,
+        &10_000i128,
+        &0i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&inv, &5_000i128);
+    assert_eq!(client.get_effective_yield_bps(&inv), 0);
+    assert_eq!(client.get_effective_yield_bps(&stranger), 0);
+}
+
+#[test]
+fn test_effective_yield_bps_matches_payout_resolution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let tiered = Address::generate(&env);
+    let base = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 1000,
+    });
+    // total target 10_000; both investors fund 5_000 each so the escrow becomes funded
+    // and a FundingCloseSnapshot is written, enabling compute_investor_payout.
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "EFFY005"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    client.fund_with_commitment(&tiered, &5_000i128, &100u64);
+    client.fund(&base, &5_000i128);
+    assert_eq!(client.get_escrow().status, 1);
+
+    // total_principal = 10_000.
+    // Tiered investor (yield 1000 bps): coupon = 10_000 * 1000 / 10_000 = 1_000;
+    //   settle_pool = 11_000; payout = 5_000 * 11_000 / 10_000 = 5_500.
+    assert_eq!(client.get_effective_yield_bps(&tiered), 1000);
+    assert_eq!(client.compute_investor_payout(&tiered), 5_500);
+
+    // Base investor (yield 800 bps): coupon = 10_000 * 800 / 10_000 = 800;
+    //   settle_pool = 10_800; payout = 5_000 * 10_800 / 10_000 = 5_400.
+    assert_eq!(client.get_effective_yield_bps(&base), 800);
+    assert_eq!(client.compute_investor_payout(&base), 5_400);
+}
+
 #[test]
 #[should_panic]
 fn test_fund_with_commitment_twice_panics() {
