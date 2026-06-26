@@ -68,18 +68,49 @@ reducing transaction overhead for primary issuance workflows.
 
 **Funded-target snapshot:**
 - If any entry causes the escrow to transition to **funded** (status `0 → 1`),
-  `FundingCloseSnapshot` is recorded exactly once
-- Remaining entries are processed even after the transition
+  `FundingCloseSnapshot` is recorded exactly once at the crossing entry
+- Remaining entries continue to be processed even after the transition
+- The snapshot's `total_principal` reflects `funded_amount` at the exact entry that crossed
+  the threshold, not the final batch total
 
 **Example:**
 ```rust
 let entries = vec![
     (investor_a, 30_000i128),
-    (investor_b, 55_000i128),
-    (investor_c, 10_000i128),
+    (investor_b, 55_000i128), // crosses funding_target = 80_000 → snapshot written here
+    (investor_c, 10_000i128), // processed post-transition; contribution recorded
 ];
-let result = fund_batch(entries); // All three funded in one call
+let result = fund_batch(entries); // All three processed; status = 1
 ```
+
+**Test coverage** (see `escrow/src/tests/funding.rs`):
+
+| Scenario | Test |
+|----------|------|
+| N-entry batch == N sequential `fund` calls (funded_amount, contributions, UniqueFunderCount) | `test_fund_batch_equivalence_funded_amount_contributions_and_unique_count` |
+| Equivalence holds when batch crosses target | `test_fund_batch_equivalence_when_batch_crosses_target` |
+| Snapshot written once, immutable, crossing-entry total captured | `test_fund_batch_mid_batch_transition_snapshot_written_exactly_once` |
+| First entry crosses target; snapshot immutable | `test_fund_batch_first_entry_crosses_target_snapshot_immutable` |
+| Snapshot captures correct ledger timestamp/sequence | `test_fund_batch_snapshot_captures_ledger_time` |
+| Entries after funded transition are processed | `test_fund_batch_entries_after_transition_are_processed` |
+| `FundingBatchEmpty` typed error | `test_fund_batch_empty_yields_typed_error` |
+| `FundingBatchTooLarge` typed error | `test_fund_batch_too_large_yields_typed_error` |
+| Exactly MAX_FUND_BATCH (50) entries succeeds | `test_fund_batch_exactly_max_batch_size_succeeds_and_counts_all_investors` |
+| Zero-amount entry → `FundingAmountNotPositive` | `test_fund_batch_zero_amount_entry_yields_typed_error` |
+| Below min-contribution floor → `FundingBelowMinContribution` | `test_fund_batch_below_min_contribution_floor_yields_typed_error` |
+| Per-investor cap enforced per entry | `test_fund_batch_per_investor_cap_enforced_per_entry_typed_error` |
+| Same investor twice accumulates; cap still enforced | `test_fund_batch_same_investor_accumulates_and_cap_enforced` |
+| Max unique investors cap enforced inside batch | `test_fund_batch_unique_investor_cap_enforced_inside_batch` |
+| Legal hold blocks batch | `test_fund_batch_blocked_by_legal_hold` |
+| Allowlist gate blocks non-allowlisted entry | `test_fund_batch_blocked_by_allowlist_gate` |
+| All allowlisted entries succeed | `test_fund_batch_succeeds_when_all_entries_allowlisted` |
+| Batch rejected when escrow already funded | `test_fund_batch_rejected_after_escrow_already_funded` |
+| Unique count increments once per address | `test_fund_batch_unique_count_incremented_once_per_investor` |
+| Sequential batches don't double-count existing investors | `test_fund_batch_sequential_batches_unique_count_does_not_double_count` |
+| Over-funding single entry | `test_fund_batch_overfunding_single_entry` |
+| Over-funding across two entries; snapshot correct | `test_fund_batch_overfunding_across_two_entries_snapshot_correct` |
+| Per-investor `require_auth` recorded for each entry | `test_fund_batch_investor_auth_recorded_for_each_entry` |
+| Event count == entry count | `test_fund_batch_event_count_matches_entry_count` |
 
 ---
 

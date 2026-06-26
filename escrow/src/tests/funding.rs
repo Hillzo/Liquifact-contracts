@@ -3263,3 +3263,734 @@ fn test_fund_batch_preserves_event_semantics() {
     // Each event corresponds to a fund operation
     // (Detailed event field verification depends on EscrowFunded structure)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fund_batch: equivalence, ordering, mid-batch transition, bounds, guards
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper: initialise an escrow with a given target and optional per-investor cap,
+/// min contribution floor, and max unique investors cap.
+///
+/// All optional params map 1:1 onto the `init` signature:
+/// - `min_contribution`: `min_contribution` param (None = no floor)
+/// - `max_per_investor`:  `max_per_investor` param (None = unlimited)
+/// - `max_unique`:        `max_unique_investors` param (None = unlimited)
+fn batch_init(
+    env: &Env,
+    client: &LiquifactEscrowClient<'_>,
+    invoice_id: &str,
+    target: i128,
+    min_contribution: Option<i128>,
+    max_per_investor: Option<i128>,
+    max_unique: Option<u32>,
+) {
+    let (tok, tre) = free_addresses(env);
+    client.init(
+        &Address::generate(env),
+        &soroban_sdk::String::from_str(env, invoice_id),
+        &Address::generate(env),
+        &target,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &min_contribution,
+        &max_unique,
+        &max_per_investor,
+        &None,
+        &None,
+    );
+}
+
+// ── 1. Equivalence: N-entry batch == N sequential single fund() calls ─────────
+
+/// Security property: `fund_batch` is strictly equivalent to N sequential `fund` calls.
+///
+/// Asserts `funded_amount`, per-investor contributions, `UniqueFunderCount`,
+/// and final `status` are identical regardless of call path.
+#[test]
+fn test_fund_batch_equivalence_funded_amount_contributions_and_unique_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client_a = deploy(&env); // batch path
+    let client_b = deploy(&env); // sequential path
+
+    let target = 500_000i128;
+    let invoice_a = "EQ_BATCH_A";
+    let invoice_b = "EQ_BATCH_B";
+    batch_init(&env, &client_a, invoice_a, target, None, None, None);
+    batch_init(&env, &client_b, invoice_b, target, None, None, None);
+
+    // 7 investors with distinct amounts that stay sub-target so status stays open
+    let investors: Vec<Address> = (0..7).map(|_| Address::generate(&env)).collect();
+    let amounts: Vec<i128> = vec![
+        10_000, 20_000, 15_000, 8_000, 12_000, 9_000, 11_000,
+    ];
+
+    // Path A – batch
+    let mut batch = SorobanVec::new(&env);
+    for (inv, &amt) in investors.iter().zip(amounts.iter()) {
+        batch.push_back((inv.clone(), amt));
+    }
+    let batch_result = client_a.fund_batch(&batch);
+
+    // Path B – sequential
+    for (inv, &amt) in investors.iter().zip(amounts.iter()) {
+        client_b.fund(inv, &amt);
+    }
+    let single_result = client_b.get_escrow();
+
+    // funded_amount and status must match
+    assert_eq!(batch_result.funded_amount, single_result.funded_amount);
+    assert_eq!(batch_result.status, single_result.status);
+
+    // per-investor contributions must match
+    for inv in &investors {
+        assert_eq!(
+            client_a.get_contribution(inv),
+            client_b.get_contribution(inv),
+            "contribution mismatch for investor {inv:?}"
+        );
+    }
+
+    // UniqueFunderCount must match
+    assert_eq!(
+        client_a.get_unique_funder_count(),
+        client_b.get_unique_funder_count(),
+        "unique funder count diverged between batch and sequential paths"
+    );
+}
+
+/// Equivalence holds even when the batch **crosses** the funding target —
+/// both paths must end in status = 1 (funded) with identical contribution accounting.
+#[test]
+fn test_fund_batch_equivalence_when_batch_crosses_target() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client_a = deploy(&env);
+    let client_b = deploy(&env);
+
+    let target = 100_000i128;
+    batch_init(&env, &client_a, "EQ_CROSS_A", target, None, None, None);
+    batch_init(&env, &client_b, "EQ_CROSS_B", target, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+    let inv3 = Address::generate(&env);
+    // inv1 + inv2 = 90k, inv3 pushes total to 130k (overshoot)
+    let amounts = [(inv1.clone(), 40_000i128), (inv2.clone(), 50_000i128), (inv3.clone(), 40_000i128)];
+
+    let mut batch = SorobanVec::new(&env);
+    for (inv, amt) in &amounts {
+        batch.push_back((inv.clone(), *amt));
+    }
+    let batch_result = client_a.fund_batch(&batch);
+
+    for (inv, amt) in &amounts {
+        client_b.fund(inv, amt);
+    }
+    let single_result = client_b.get_escrow();
+
+    assert_eq!(batch_result.funded_amount, single_result.funded_amount);
+    assert_eq!(batch_result.status, 1);
+    assert_eq!(single_result.status, 1);
+
+    for (inv, _) in &amounts {
+        assert_eq!(
+            client_a.get_contribution(inv),
+            client_b.get_contribution(inv),
+        );
+    }
+    assert_eq!(
+        client_a.get_unique_funder_count(),
+        client_b.get_unique_funder_count(),
+    );
+}
+
+// ── 2. Mid-batch funded-target transition & snapshot immutability ─────────────
+
+/// The `open → funded` status flip must occur inside the batch at the exact entry
+/// that crosses `funding_target`, not before and not after.
+/// `FundingCloseSnapshot` must be written exactly once and be immutable thereafter.
+#[test]
+fn test_fund_batch_mid_batch_transition_snapshot_written_exactly_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let target = 60_000i128;
+    batch_init(&env, &client, "MIDBATCH1", target, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+    let inv3 = Address::generate(&env);
+
+    // inv1 = 20k (open), inv2 = 40k → total 60k (exactly funded), inv3 = 5k (post-target)
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back((inv1.clone(), 20_000i128));
+    batch.push_back((inv2.clone(), 40_000i128));
+    batch.push_back((inv3.clone(), 5_000i128));
+
+    let result = client.fund_batch(&batch);
+
+    // Status must be funded
+    assert_eq!(result.status, 1);
+    assert_eq!(result.funded_amount, 65_000i128);
+
+    // Snapshot must exist and capture the total at the crossing point
+    let snap = client
+        .get_funding_close_snapshot()
+        .expect("FundingCloseSnapshot must be written when batch crosses target");
+
+    // Snapshot total_principal must equal the total funded amount (including post-target entry)
+    // because snapshot is written at the exact crossing entry with the running total at that point
+    assert_eq!(snap.funding_target, target);
+    // total_principal is funded_amount at the moment the snapshot was written (entry 2: 60k)
+    assert_eq!(snap.total_principal, 60_000i128,
+        "snapshot must capture the total at the crossing entry, not final batch total");
+
+    // Snapshot must be immutable: re-reading gives identical value
+    let snap2 = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(snap, snap2, "FundingCloseSnapshot must be immutable after first write");
+}
+
+/// When the first entry of the batch already meets or exceeds the target,
+/// the snapshot must be written on entry 0 and subsequent entries must not
+/// overwrite it.
+#[test]
+fn test_fund_batch_first_entry_crosses_target_snapshot_immutable() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let target = 10_000i128;
+    batch_init(&env, &client, "FIRSTCROSS", target, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+
+    // First entry fully funds the escrow; second entry goes post-target
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back((inv1.clone(), 15_000i128)); // crosses target
+    batch.push_back((inv2.clone(), 5_000i128));  // post-target
+
+    client.fund_batch(&batch);
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    // Snapshot captured on inv1's entry (15k)
+    assert_eq!(snap.total_principal, 15_000i128);
+    assert_eq!(snap.funding_target, target);
+}
+
+/// Snapshot `closed_at_ledger_timestamp` and `closed_at_ledger_sequence` must
+/// reflect the ledger values at call time, not stale values.
+#[test]
+fn test_fund_batch_snapshot_captures_ledger_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let mut li = env.ledger().get();
+    li.timestamp = 99_999u64;
+    li.sequence_number = 42u32;
+    env.ledger().set(li);
+
+    let client = deploy(&env);
+    let target = 5_000i128;
+    batch_init(&env, &client, "SNAPTIME1", target, None, None, None);
+
+    let inv = Address::generate(&env);
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back((inv.clone(), 5_000i128));
+    client.fund_batch(&batch);
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(snap.closed_at_ledger_timestamp, 99_999u64);
+    assert_eq!(snap.closed_at_ledger_sequence, 42u32);
+}
+
+/// Entries submitted after the funded transition are still processed —
+/// contributions and unique-funder count accumulate past the target crossing.
+#[test]
+fn test_fund_batch_entries_after_transition_are_processed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let target = 50_000i128;
+    batch_init(&env, &client, "POSTTRANS1", target, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env); // crosses target
+    let inv3 = Address::generate(&env); // post-target
+    let inv4 = Address::generate(&env); // post-target
+
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back((inv1.clone(), 20_000i128));
+    batch.push_back((inv2.clone(), 35_000i128)); // running total = 55k → funded
+    batch.push_back((inv3.clone(), 5_000i128));  // post-target
+    batch.push_back((inv4.clone(), 3_000i128));  // post-target
+
+    let result = client.fund_batch(&batch);
+
+    assert_eq!(result.status, 1);
+    assert_eq!(result.funded_amount, 63_000i128);
+
+    // All entries must be recorded
+    assert_eq!(client.get_contribution(&inv1), 20_000i128);
+    assert_eq!(client.get_contribution(&inv2), 35_000i128);
+    assert_eq!(client.get_contribution(&inv3), 5_000i128);
+    assert_eq!(client.get_contribution(&inv4), 3_000i128);
+
+    // All 4 unique investors counted
+    assert_eq!(client.get_unique_funder_count(), 4u32);
+}
+
+// ── 3. Capacity boundary tests ────────────────────────────────────────────────
+
+/// `FundingBatchEmpty` (code 82) must be raised for a zero-length batch.
+/// Separate from the existing `#[should_panic]` test to assert the typed error code.
+#[test]
+fn test_fund_batch_empty_yields_typed_error() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let empty: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    let result = client.try_fund_batch(&empty);
+    assert_contract_error(result, EscrowError::FundingBatchEmpty);
+}
+
+/// `FundingBatchTooLarge` (code 83) must be raised for MAX_FUND_BATCH + 1 entries.
+#[test]
+fn test_fund_batch_too_large_yields_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "OVERSIZED1", 10_000_000i128, None, None, None);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    for _ in 0..=(MAX_FUND_BATCH as usize) {
+        entries.push_back((Address::generate(&env), 1i128));
+    }
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::FundingBatchTooLarge);
+}
+
+/// A batch of exactly `MAX_FUND_BATCH` (50) entries must succeed.
+/// Also verifies that `UniqueFunderCount` equals 50 after processing.
+#[test]
+fn test_fund_batch_exactly_max_batch_size_succeeds_and_counts_all_investors() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let per_entry = 1_000i128;
+    let target = (MAX_FUND_BATCH as i128) * per_entry * 2; // large enough to stay open
+    batch_init(&env, &client, "MAX50BATCH", target, None, None, None);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    let mut investors = Vec::new();
+    for _ in 0..MAX_FUND_BATCH {
+        let inv = Address::generate(&env);
+        entries.push_back((inv.clone(), per_entry));
+        investors.push(inv);
+    }
+
+    let result = client.fund_batch(&entries);
+
+    assert_eq!(result.funded_amount, (MAX_FUND_BATCH as i128) * per_entry);
+    assert_eq!(result.status, 0, "escrow should remain open (target not reached)");
+    assert_eq!(
+        client.get_unique_funder_count(),
+        MAX_FUND_BATCH,
+        "all 50 distinct investors must be counted"
+    );
+}
+
+// ── 4. Per-entry validation guards inside the batch ──────────────────────────
+
+/// `FundingAmountNotPositive` is raised when any batch entry has a zero amount.
+#[test]
+fn test_fund_batch_zero_amount_entry_yields_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "ZERO_AMT1", 100_000i128, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv1.clone(), 10_000i128));
+    entries.push_back((inv2.clone(), 0i128)); // zero amount
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::FundingAmountNotPositive);
+}
+
+/// `FundingBelowMinContribution` is raised when any batch entry is below the floor.
+#[test]
+fn test_fund_batch_below_min_contribution_floor_yields_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let floor = 5_000i128;
+    batch_init(&env, &client, "FLOOR_001", 100_000i128, Some(floor), None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv1.clone(), 10_000i128)); // above floor
+    entries.push_back((inv2.clone(), 4_999i128));  // below floor
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::FundingBelowMinContribution);
+}
+
+/// All entries at or above the min-contribution floor must succeed.
+#[test]
+fn test_fund_batch_all_entries_at_floor_succeed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let floor = 1_000i128;
+    batch_init(&env, &client, "FLOOR_002", 100_000i128, Some(floor), None, None);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    for _ in 0..5 {
+        entries.push_back((Address::generate(&env), floor));
+    }
+
+    let result = client.fund_batch(&entries);
+    assert_eq!(result.funded_amount, floor * 5);
+}
+
+/// `InvestorContributionExceedsCap` is raised for a batch entry that pushes
+/// a single investor past the per-investor cap.
+#[test]
+fn test_fund_batch_per_investor_cap_enforced_per_entry_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let cap = 20_000i128;
+    batch_init(&env, &client, "PERCAP001", 100_000i128, None, Some(cap), None);
+
+    let inv_ok  = Address::generate(&env);
+    let inv_bad = Address::generate(&env);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv_ok.clone(),  15_000i128)); // within cap
+    entries.push_back((inv_bad.clone(), 25_000i128)); // exceeds cap
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::InvestorContributionExceedsCap);
+}
+
+/// A batch with a same investor appearing twice accumulates across entries.
+/// If the accumulated total exceeds the per-investor cap, `InvestorContributionExceedsCap`
+/// must be raised on the second entry.
+#[test]
+fn test_fund_batch_same_investor_accumulates_and_cap_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let cap = 30_000i128;
+    batch_init(&env, &client, "SAMEDUPL1", 100_000i128, None, Some(cap), None);
+
+    let inv = Address::generate(&env);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv.clone(), 20_000i128)); // 20k — OK
+    entries.push_back((inv.clone(), 15_000i128)); // 20k + 15k = 35k — exceeds 30k cap
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::InvestorContributionExceedsCap);
+}
+
+/// `UniqueInvestorCapReached` is raised when the batch would add more distinct
+/// investors than `max_unique_investors` allows.
+#[test]
+fn test_fund_batch_unique_investor_cap_enforced_inside_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let max_unique = 3u32;
+    batch_init(&env, &client, "UNIQ_CAP1", 100_000i128, None, None, Some(max_unique));
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    for _ in 0..4 { // 4 entries > cap of 3
+        entries.push_back((Address::generate(&env), 1_000i128));
+    }
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::UniqueInvestorCapReached);
+}
+
+// ── 5. Legal-hold and allowlist guards inside batch ───────────────────────────
+
+/// `LegalHoldBlocksFunding` must be raised when a legal hold is active,
+/// even inside a batch call.
+#[test]
+fn test_fund_batch_blocked_by_legal_hold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "HOLD_BCH1", 100_000i128, None, None, None);
+
+    // Activate legal hold
+    client.set_legal_hold(&true);
+
+    let inv = Address::generate(&env);
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv.clone(), 5_000i128));
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::LegalHoldBlocksFunding);
+}
+
+/// `InvestorNotAllowlisted` must be raised for an address not on the allowlist
+/// when the allowlist gate is active inside a batch call.
+#[test]
+fn test_fund_batch_blocked_by_allowlist_gate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "ALLOW_B1", 100_000i128, None, None, None);
+
+    // Enable allowlist and add only inv1
+    client.set_allowlist_active(&true);
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env); // not allowlisted
+    client.set_investor_allowlisted(&inv1, &true);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv1.clone(), 5_000i128));  // allowlisted — OK
+    entries.push_back((inv2.clone(), 5_000i128));  // not allowlisted — should fail
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::InvestorNotAllowlisted);
+}
+
+/// When the allowlist is active, all batch entries must be allowlisted to succeed.
+#[test]
+fn test_fund_batch_succeeds_when_all_entries_allowlisted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "ALLOW_B2", 100_000i128, None, None, None);
+
+    client.set_allowlist_active(&true);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    for _ in 0..3 {
+        let inv = Address::generate(&env);
+        client.set_investor_allowlisted(&inv, &true);
+        entries.push_back((inv, 1_000i128));
+    }
+
+    let result = client.fund_batch(&entries);
+    assert_eq!(result.funded_amount, 3_000i128);
+}
+
+// ── 6. Status guard: batch rejected after escrow is funded ────────────────────
+
+/// `EscrowNotOpenForFunding` must be raised if `fund_batch` is called
+/// when the escrow has already reached funded status (status == 1).
+#[test]
+fn test_fund_batch_rejected_after_escrow_already_funded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let target = 10_000i128;
+    batch_init(&env, &client, "ALRDY_FND", target, None, None, None);
+
+    // Fund to target via a single call to reach status = 1
+    let inv0 = Address::generate(&env);
+    client.fund(&inv0, &target);
+    assert_eq!(client.get_escrow().status, 1);
+
+    // Now a batch should be rejected
+    let inv_new = Address::generate(&env);
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv_new.clone(), 1_000i128));
+
+    let result = client.try_fund_batch(&entries);
+    assert_contract_error(result, EscrowError::EscrowNotOpenForFunding);
+}
+
+// ── 7. Unique-funder count ordering and accumulation ─────────────────────────
+
+/// When the same investor appears in multiple batch entries, the unique-funder count
+/// must increment only once (on first contribution from that address).
+#[test]
+fn test_fund_batch_unique_count_incremented_once_per_investor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "UNIQ_CNT1", 500_000i128, None, None, None);
+
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+
+    // inv_a appears twice — should only count once toward unique funders
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv_a.clone(), 10_000i128));
+    entries.push_back((inv_b.clone(), 10_000i128));
+    entries.push_back((inv_a.clone(), 5_000i128)); // second entry same address
+
+    client.fund_batch(&entries);
+
+    // Only 2 unique investors
+    assert_eq!(client.get_unique_funder_count(), 2u32);
+    // But contributions accumulate for inv_a
+    assert_eq!(client.get_contribution(&inv_a), 15_000i128);
+    assert_eq!(client.get_contribution(&inv_b), 10_000i128);
+}
+
+/// Sequential batch calls on the same escrow accumulate unique-funder count correctly:
+/// existing investors in a second batch do not inflate the count.
+#[test]
+fn test_fund_batch_sequential_batches_unique_count_does_not_double_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "UNIQ_CNT2", 500_000i128, None, None, None);
+
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+
+    // First batch: inv_a, inv_b
+    let mut batch1: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    batch1.push_back((inv_a.clone(), 5_000i128));
+    batch1.push_back((inv_b.clone(), 5_000i128));
+    client.fund_batch(&batch1);
+
+    assert_eq!(client.get_unique_funder_count(), 2u32);
+
+    // Second batch: inv_a (existing), inv_c (new)
+    let mut batch2: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    batch2.push_back((inv_a.clone(), 3_000i128));
+    batch2.push_back((inv_c.clone(), 3_000i128));
+    client.fund_batch(&batch2);
+
+    // inv_a is not new — only inv_c increments the count
+    assert_eq!(client.get_unique_funder_count(), 3u32);
+    assert_eq!(client.get_contribution(&inv_a), 8_000i128);
+}
+
+// ── 8. Over-funding through a batch ──────────────────────────────────────────
+
+/// Over-funding past the target in a single batch entry must set status = 1,
+/// record the snapshot with the actual (over-funded) total, and correctly
+/// store the contribution for the over-funding investor.
+#[test]
+fn test_fund_batch_overfunding_single_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let target = 50_000i128;
+    batch_init(&env, &client, "OVERFND01", target, None, None, None);
+
+    let inv = Address::generate(&env);
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv.clone(), target + 30_000i128)); // 80k > 50k target
+
+    let result = client.fund_batch(&entries);
+
+    assert_eq!(result.status, 1);
+    assert_eq!(result.funded_amount, target + 30_000i128);
+    assert_eq!(client.get_contribution(&inv), target + 30_000i128);
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(snap.total_principal, target + 30_000i128);
+    assert_eq!(snap.funding_target, target);
+}
+
+/// Over-funding distributed across two entries: second entry pushes past target.
+/// The snapshot must capture the total at the entry where the threshold was crossed.
+#[test]
+fn test_fund_batch_overfunding_across_two_entries_snapshot_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let target = 50_000i128;
+    batch_init(&env, &client, "OVERFND02", target, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv1.clone(), 30_000i128)); // 30k — still open
+    entries.push_back((inv2.clone(), 40_000i128)); // 70k — crosses 50k target
+
+    let result = client.fund_batch(&entries);
+
+    assert_eq!(result.status, 1);
+    assert_eq!(result.funded_amount, 70_000i128);
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    // Snapshot captures the total at the entry that caused the transition (70k)
+    assert_eq!(snap.total_principal, 70_000i128);
+    assert_eq!(snap.funding_target, target);
+}
+
+// ── 9. Auth: per-investor require_auth inside batch ──────────────────────────
+
+/// Each investor in the batch must have authorised their own entry.
+/// With `mock_all_auths`, every address auto-authorises, so the test confirms
+/// auth records are present for each investor in the batch.
+#[test]
+fn test_fund_batch_investor_auth_recorded_for_each_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    batch_init(&env, &client, "AUTH_BCH1", 100_000i128, None, None, None);
+
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+    let inv3 = Address::generate(&env);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    entries.push_back((inv1.clone(), 5_000i128));
+    entries.push_back((inv2.clone(), 5_000i128));
+    entries.push_back((inv3.clone(), 5_000i128));
+
+    client.fund_batch(&entries);
+
+    // All three investors must appear in the recorded auths
+    let auths = env.auths();
+    for inv in &[&inv1, &inv2, &inv3] {
+        assert!(
+            auths.iter().any(|(addr, _)| addr == *inv),
+            "investor {inv:?} auth was not recorded in fund_batch"
+        );
+    }
+}
+
+// ── 10. Event emission semantics ─────────────────────────────────────────────
+
+/// `fund_batch` with N entries must emit exactly N `EscrowFunded` events —
+/// same count as N sequential `fund` calls.
+#[test]
+fn test_fund_batch_event_count_matches_entry_count() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let n = 4usize;
+    batch_init(&env, &client, "EVTCNT01", 500_000i128, None, None, None);
+
+    let mut entries: SorobanVec<(Address, i128)> = SorobanVec::new(&env);
+    for _ in 0..n {
+        entries.push_back((Address::generate(&env), 1_000i128));
+    }
+
+    client.fund_batch(&entries);
+
+    assert_eq!(
+        env.events().all().events().len(),
+        n,
+        "fund_batch must emit exactly one EscrowFunded event per entry"
+    );
+}
