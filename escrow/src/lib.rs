@@ -975,7 +975,18 @@ pub struct InvestorRefundedEvt {
 }
 
 #[contractevent]
+pub struct RegistryRefRebound {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    /// New registry hint; `None` clears the stored value.
+    pub registry: Option<Address>,
+}
+
+#[contractevent]
 pub struct TreasuryDustSwept {
+
     #[topic]
     pub name: Symbol,
     pub invoice_id: Symbol,
@@ -1462,6 +1473,37 @@ impl LiquifactEscrow {
     pub fn get_registry_ref(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::RegistryRef)
     }
+
+    /// Admin-only: rebind the off-chain registry hint stored under [`DataKey::RegistryRef`].
+    ///
+    /// This registry reference is a **hint only** for off-chain indexers and must not be used
+    /// as an authority boundary in on-chain logic.
+    ///
+    /// # Authorization
+    /// Requires the signature of the current [`InvoiceEscrow::admin`].
+    ///
+    /// # Events
+    /// Emits [`RegistryRefRebound`] with the new value (`Some(addr)` or `None` to clear).
+    pub fn rebind_registry_ref(env: Env, registry: Option<Address>) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        match registry.clone() {
+            Some(_) => {
+                env.storage().instance().set(&DataKey::RegistryRef, &registry);
+            }
+            None => {
+                env.storage().instance().remove(&DataKey::RegistryRef);
+            }
+        }
+
+        RegistryRefRebound {
+            name: symbol_short!("reg_rebind"),
+            invoice_id: escrow.invoice_id,
+            registry,
+        }
+        .publish(&env);
+    }
+
 
     /// Returns the optional pending admin address waiting for [`LiquifactEscrow::accept_admin`],
     /// or [`None`] when no admin handover is in progress.

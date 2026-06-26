@@ -1,7 +1,9 @@
 use super::*;
 use crate::{
     AdminProposalCancelled, AdminProposedEvent, EscrowCloseSnapshot, FundingTargetUpdated,
+    RegistryRefRebound,
 };
+
 use soroban_sdk::Event;
 
 // Admin/governance operations: target changes, maturity changes, admin handover,
@@ -9,6 +11,7 @@ use soroban_sdk::Event;
 
 #[test]
 fn test_update_maturity_emits_event() {
+
     use soroban_sdk::testutils::Events as _;
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
@@ -2409,7 +2412,97 @@ fn test_rotate_beneficiary_then_withdraw_goes_to_new_sme() {
 }
 
 #[test]
+fn test_rebind_registry_ref_sets_and_clears() {
+
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+
+    let contract_id = client.address.clone();
+    let invoice_id = client.get_escrow().invoice_id.clone();
+
+    let reg1 = Address::generate(&env);
+    let reg2 = Address::generate(&env);
+
+    // init with no registry
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "REG_RB_1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Set to reg1
+    client.rebind_registry_ref(&Some(reg1.clone()));
+    assert_eq!(client.get_registry_ref(), Some(reg1.clone()));
+
+    // Change to reg2
+    client.rebind_registry_ref(&Some(reg2.clone()));
+    assert_eq!(client.get_registry_ref(), Some(reg2.clone()));
+
+    // Clear to None
+    client.rebind_registry_ref(&None);
+    assert_eq!(client.get_registry_ref(), None);
+
+    // Event sanity: last event should be clear (registry == None)
+    let last = env.events().all().events().last().unwrap().clone();
+    let expected = crate::RegistryRefRebound {
+        name: symbol_short!("reg_rebind"),
+        invoice_id,
+        registry: None,
+    }
+    .to_xdr(&env, &contract_id);
+
+    assert_eq!(last, expected);
+}
+
+#[test]
+#[should_panic]
+fn test_rebind_registry_ref_requires_admin_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "REG_RB_2"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    env.mock_auths(&[]);
+    client.rebind_registry_ref(&Some(Address::generate(&env)));
+}
+
 fn test_error_code_uniqueness() {
+
     let mut discriminants = std::collections::HashSet::new();
     let codes = [
         EscrowError::AmountMustBePositive as u32,
