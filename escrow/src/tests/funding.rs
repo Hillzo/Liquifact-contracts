@@ -3264,9 +3264,637 @@ fn test_fund_batch_preserves_event_semantics() {
     // (Detailed event field verification depends on EscrowFunded structure)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests for InvestorIndex and Pagination (Issue #376)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── get_remaining_funding_capacity tests (issue tracking funding capacity) ─────
+
+/// Verify that `get_remaining_funding_capacity` returns the full funding target
+/// when no deposits have been made yet.
+#[test]
+fn test_remaining_capacity_equals_target_before_any_funding() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        TARGET,
+        "remaining capacity must equal target when funded_amount is zero"
+    );
+}
+
+/// Assert that remaining capacity decreases by exactly the deposit amount after
+/// a single fund() call, following the formula: target - funded_amount.
+#[test]
+fn test_remaining_capacity_decreases_after_single_deposit() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+
+    let deposit_amount = TARGET / 4;
+    client.fund(&investor, &deposit_amount);
+
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        TARGET - deposit_amount,
+        "remaining capacity must equal target minus funded amount"
+    );
+}
+
+/// Walk the capacity down monotonically across multiple deposits from different
+/// investors, asserting the formula holds after each fund() call.
+#[test]
+fn test_remaining_capacity_tracks_across_multiple_deposits() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+
+    // Initial capacity = TARGET
+    assert_eq!(client.get_remaining_funding_capacity(), TARGET);
+
+    // First deposit: 30% of target
+    let deposit_a = TARGET * 30 / 100;
+    client.fund(&inv_a, &deposit_a);
+    let expected_after_a = TARGET - deposit_a;
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        expected_after_a,
+        "capacity after first deposit"
+    );
+
+    // Second deposit: 25% of target
+    let deposit_b = TARGET * 25 / 100;
+    client.fund(&inv_b, &deposit_b);
+    let expected_after_b = TARGET - deposit_a - deposit_b;
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        expected_after_b,
+        "capacity after second deposit"
+    );
+
+    // Third deposit: 20% of target
+    let deposit_c = TARGET * 20 / 100;
+    client.fund(&inv_c, &deposit_c);
+    let expected_after_c = TARGET - deposit_a - deposit_b - deposit_c;
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        expected_after_c,
+        "capacity after third deposit"
+    );
+
+    // Verify monotonic decrease
+    assert!(
+        expected_after_a > expected_after_b && expected_after_b > expected_after_c,
+        "capacity must decrease monotonically"
+    );
+}
+
+/// Assert that remaining capacity reaches exactly zero when the funding target
+/// is met, and the escrow transitions to the funded state (status=1).
+#[test]
+fn test_remaining_capacity_reaches_zero_at_exact_target() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    let investor = Address::generate(&env);
+
+    client.fund(&investor, &TARGET);
+
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        0,
+        "remaining capacity must be exactly zero when target is met"
+    );
+    assert_eq!(
+        client.get_escrow().status,
+        1,
+        "escrow must transition to funded state"
+    );
+}
+
+/// Verify that remaining capacity is zero (never negative) when funded_amount
+/// exceeds the target.
+#[test]
+fn test_remaining_capacity_never_negative_when_overfunded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPOVER1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    let overfund_amount = TARGET + 50_000_000i128;
+    client.fund(&investor, &overfund_amount);
+
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        0,
+        "capacity must be floored at zero even when overfunded"
+    );
+    assert_eq!(client.get_escrow().status, 1, "escrow must be funded");
+}
+
+/// Test that capacity recomputes correctly after update_funding_target raises
+/// the target while the escrow is still open.
+#[test]
+fn test_remaining_capacity_recomputes_after_target_raised() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPUP1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    let initial_deposit = TARGET / 2;
+    client.fund(&investor, &initial_deposit);
+
+    // Capacity before target update
+    let capacity_before = client.get_remaining_funding_capacity();
+    assert_eq!(capacity_before, TARGET - initial_deposit);
+
+    // Raise the target
+    let new_target = TARGET * 2;
+    client.update_funding_target(&new_target);
+
+    // Capacity must reflect new target
+    let capacity_after = client.get_remaining_funding_capacity();
+    assert_eq!(
+        capacity_after,
+        new_target - initial_deposit,
+        "capacity must recompute with new target"
+    );
+    assert!(
+        capacity_after > capacity_before,
+        "capacity must increase when target is raised"
+    );
+}
+
+/// Test that capacity recomputes correctly after update_funding_target lowers
+/// the target while the escrow is still open (but not below funded_amount).
+#[test]
+fn test_remaining_capacity_recomputes_after_target_lowered() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPDOWN1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    let initial_deposit = TARGET / 4; // 25% of original target
+    client.fund(&investor, &initial_deposit);
+
+    // Capacity before target update
+    let capacity_before = client.get_remaining_funding_capacity();
+    assert_eq!(capacity_before, TARGET - initial_deposit);
+
+    // Lower the target to 50% of original (still above funded_amount)
+    let new_target = TARGET / 2;
+    client.update_funding_target(&new_target);
+
+    // Capacity must reflect new lower target
+    let capacity_after = client.get_remaining_funding_capacity();
+    assert_eq!(
+        capacity_after,
+        new_target - initial_deposit,
+        "capacity must recompute with new lowered target"
+    );
+    assert!(
+        capacity_after < capacity_before,
+        "capacity must decrease when target is lowered"
+    );
+}
+
+/// When the target is lowered to exactly equal funded_amount, capacity must be
+/// zero and the escrow must transition to funded state.
+#[test]
+fn test_remaining_capacity_zero_when_target_lowered_to_funded_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPDOWN2"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    let deposit = TARGET / 3;
+    client.fund(&investor, &deposit);
+
+    assert_eq!(client.get_escrow().status, 0, "escrow must still be open");
+
+    // Lower target to exactly the funded amount
+    client.update_funding_target(&deposit);
+
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        0,
+        "capacity must be zero when target equals funded amount"
+    );
+    assert_eq!(
+        client.get_escrow().status,
+        1,
+        "escrow must transition to funded when target is lowered to funded_amount"
+    );
+}
+
+/// Test capacity tracking with multiple deposits and a target update mid-flight,
+/// verifying monotonic decrease and correct formula application throughout.
+#[test]
+fn test_remaining_capacity_across_deposits_and_target_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPMID1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+
+    // First deposit: 20% of target
+    let deposit_a = TARGET / 5;
+    client.fund(&inv_a, &deposit_a);
+    assert_eq!(client.get_remaining_funding_capacity(), TARGET - deposit_a);
+
+    // Second deposit: 15% of target
+    let deposit_b = TARGET * 15 / 100;
+    client.fund(&inv_b, &deposit_b);
+    let funded_before_update = deposit_a + deposit_b;
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        TARGET - funded_before_update
+    );
+
+    // Update target to 150% of original
+    let new_target = TARGET * 3 / 2;
+    client.update_funding_target(&new_target);
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        new_target - funded_before_update,
+        "capacity must reflect new target after update"
+    );
+
+    // Third deposit: 40% of original target
+    let deposit_c = TARGET * 40 / 100;
+    client.fund(&inv_c, &deposit_c);
+    let total_funded = funded_before_update + deposit_c;
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        new_target - total_funded,
+        "capacity must continue tracking correctly after target update"
+    );
+
+    // Escrow should still be open since total < new_target
+    assert_eq!(client.get_escrow().status, 0);
+    assert!(total_funded < new_target);
+}
+
+/// Verify capacity with fund_batch, ensuring capacity decreases by the sum of
+/// all batch entries.
+#[test]
+fn test_remaining_capacity_with_fund_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPBATCH1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+
+    let amount_a = TARGET / 5;
+    let amount_b = TARGET / 4;
+    let amount_c = TARGET / 10;
+
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back((inv_a, amount_a));
+    batch.push_back((inv_b, amount_b));
+    batch.push_back((inv_c, amount_c));
+
+    client.fund_batch(&batch);
+
+    let total_batch = amount_a + amount_b + amount_c;
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        TARGET - total_batch,
+        "capacity must decrease by total batch amount"
+    );
+}
+
+/// Edge case: capacity with minimal target (1 unit).
+#[test]
+fn test_remaining_capacity_minimal_target() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPMIN1"),
+        &sme,
+        &1i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    assert_eq!(client.get_remaining_funding_capacity(), 1);
+
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1i128);
+
+    assert_eq!(client.get_remaining_funding_capacity(), 0);
+    assert_eq!(client.get_escrow().status, 1);
+}
+
+/// Edge case: capacity with very large target (near i128::MAX).
+#[test]
+fn test_remaining_capacity_very_large_target() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let large_target = i128::MAX / 2;
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPLARGE1"),
+        &sme,
+        &large_target,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    let deposit = large_target / 10;
+    client.fund(&investor, &deposit);
+
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        large_target - deposit
+    );
+}
+
+/// Verify that capacity tracking works correctly with fund_with_commitment
+/// (tiered yield deposits).
+#[test]
+fn test_remaining_capacity_with_tiered_funding() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 900,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPTIER1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+
+    let deposit_a = TARGET / 3;
+    client.fund_with_commitment(&inv_a, &deposit_a, &150u64);
+    assert_eq!(client.get_remaining_funding_capacity(), TARGET - deposit_a);
+
+    let deposit_b = TARGET / 3;
+    client.fund(&inv_b, &deposit_b);
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        TARGET - deposit_a - deposit_b
+    );
+}
+
+/// Comprehensive test: verify capacity is never negative across all transitions:
+/// multiple deposits, target update, and reaching funded state.
+#[test]
+fn test_remaining_capacity_never_negative_comprehensive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAPNEG1"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let inv = Address::generate(&env);
+
+    // Start: capacity = TARGET
+    assert!(client.get_remaining_funding_capacity() >= 0);
+
+    // Fund 80% of target
+    client.fund(&inv, &(TARGET * 80 / 100));
+    assert!(client.get_remaining_funding_capacity() >= 0);
+
+    // Lower target to 90% of original (still above funded amount)
+    client.update_funding_target(&(TARGET * 90 / 100));
+    assert!(client.get_remaining_funding_capacity() >= 0);
+
+    // Fund another 20% of original target (now overfunded vs new target)
+    client.fund(&inv, &(TARGET * 20 / 100));
+    assert_eq!(
+        client.get_remaining_funding_capacity(),
+        0,
+        "capacity must be zero when overfunded, not negative"
+    );
+    assert_eq!(client.get_escrow().status, 1);
+}
+
+// ─── is_fully_funded tests (issue #399) ──────────────────────────────────────
 
 #[test]
 fn test_investor_index_population() {
