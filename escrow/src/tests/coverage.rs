@@ -14,6 +14,8 @@ use soroban_sdk::{
 const AMOUNT: i128 = 10_000_0000000;
 const PLEDGE: i128 = 5_000_0000000;
 
+#[test]
+fn dummy_test() {
     assert_contract_error(
         client.try_init(
             &admin,
