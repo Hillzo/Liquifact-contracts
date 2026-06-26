@@ -1049,6 +1049,44 @@ pub struct InvestorAllowlistChanged {
     pub allowed: u32,
 }
 
+/// Batch-level summary event emitted once per `set_investors_allowlisted` call.
+///
+/// ## Purpose
+/// Allows indexers and audit tooling to detect that a batch allowlist operation has
+/// completed without scanning individual `al_set` events for a particular ledger
+/// range. Useful for triggering downstream reconciliation or audit checks after a
+/// bulk admin action.
+///
+/// ## Why it exists
+/// The per-investor `InvestorAllowlistChanged` (`al_set`) events emitted by
+/// `set_investors_allowlisted` are identical in shape to those emitted by the
+/// single-address `set_investor_allowlisted`. Without a distinct batch marker,
+/// indexers cannot tell whether a block of `al_set` events came from one batch
+/// call or N individual calls. `InvestorAllowlistBatchApplied` (`al_batch`)
+/// provides that signal with the full count in one event.
+///
+/// ## Relationship to per-investor events
+/// This event **supplements** — it does not replace — the per-investor `al_set`
+/// events. Both are emitted for every batch call:
+/// - N × `InvestorAllowlistChanged` (`al_set`), one per address in input order.
+/// - 1 × `InvestorAllowlistBatchApplied` (`al_batch`), after all per-investor writes.
+///
+/// ## Indexer / audit guidance
+/// - Filter on `topic[1] == "al_batch"` to identify completed batch operations.
+/// - `batch_size` matches the number of `al_set` events immediately preceding this
+///   event in the same transaction. Auditors can cross-check by counting `al_set`
+///   emissions in the same tx.
+/// - `allowed` mirrors the single `allowed` flag passed to the batch call.
+#[contractevent]
+pub struct InvestorAllowlistBatchApplied {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub batch_size: u32,
+    /// `1` = allowed, `0` = blocked.
+    pub allowed: u32,
+}
+
 #[contractevent]
 pub struct ContractUpgraded {
     #[topic]
@@ -2601,6 +2639,16 @@ impl LiquifactEscrow {
             }
             .publish(&env);
         }
+
+        // Emit exactly one batch-level summary event so indexers can distinguish a
+        // batch call from N individual `set_investor_allowlisted` calls.
+        InvestorAllowlistBatchApplied {
+            name: symbol_short!("al_batch"),
+            invoice_id: escrow.invoice_id.clone(),
+            batch_size: n,
+            allowed: if allowed { 1 } else { 0 },
+        }
+        .publish(&env);
     }
 
     /// Check whether a specific investor address is allowlisted.

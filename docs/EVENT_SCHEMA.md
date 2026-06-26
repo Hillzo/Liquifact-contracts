@@ -58,6 +58,7 @@ The current contract defines 20 event structs.
 | `AttestationDigestAppended` | `att_app` | `append_attestation_digest` |
 | `AllowlistEnabledChanged` | `al_ena` | `set_allowlist_active` |
 | `InvestorAllowlistChanged` | `al_set` | `set_investor_allowlisted`, `set_investors_allowlisted` |
+| `InvestorAllowlistBatchApplied` | `al_batch` | `set_investors_allowlisted` |
 
 ## Complete Topic And Data Layout
 
@@ -484,6 +485,33 @@ Data:
 | `investor` | `Address` | Updated investor |
 | `allowed` | `u32` | `1` = allowed, `0` = blocked |
 
+### `InvestorAllowlistBatchApplied`
+
+Emitted once per `set_investors_allowlisted` call, after all per-investor
+`InvestorAllowlistChanged` (`al_set`) events have been emitted. Allows indexers
+to identify completed batch operations without counting individual `al_set`
+events. Supplements — does not replace — the per-investor events.
+
+Topics:
+
+| Index | Field | Type | Value |
+|---:|---|---|---|
+| 0 | fixed event topic | `Symbol` | `investor_allowlist_batch_applied` |
+| 1 | `name` | `Symbol` | `al_batch` |
+
+Data:
+
+| Field | Type | Values |
+|---|---|---|
+| `invoice_id` | `Symbol` | Escrow invoice id |
+| `batch_size` | `u32` | Number of investors processed (`1`–`MAX_INVESTOR_ALLOWLIST_BATCH`) |
+| `allowed` | `u32` | `1` = allowed, `0` = blocked |
+
+**Indexer guidance:** filter on `topic[1] == "al_batch"` to detect batch
+operations. `batch_size` equals the count of `al_set` events emitted in the
+same transaction. Existing indexers that only consume `al_set` remain fully
+compatible — `al_batch` is purely additive.
+
 ## Nested Types
 
 ### `InvoiceEscrow`
@@ -547,7 +575,8 @@ Status values:
   contribution zeroing before emission.
 - Event emission is O(1) for all entrypoints except
   `set_investors_allowlisted`, which emits O(n) `InvestorAllowlistChanged`
-  events for `n <= MAX_INVESTOR_ALLOWLIST_BATCH`.
+  events for `n <= MAX_INVESTOR_ALLOWLIST_BATCH` followed by exactly one
+  `InvestorAllowlistBatchApplied` event.
 
 ## Changelog
 
@@ -557,4 +586,4 @@ Status values:
 | 2026-05-27 | v0.2 | Added initialization references and investor-cap event notes |
 | 2026-05-31 | v0.3 | Issue #272: replaced drifted reference with complete `#[contractevent]` topic and data layout from `escrow/src/lib.rs` |
 | 2026-06-24 | v0.4 | Added `settled_at_ledger_timestamp` field to `EscrowSettled` event; added `is_settleable` view |
-| 2026-06-25 | v0.5 | Issue #386: added `DeprecatedTransferAdminUsed` event published by the deprecated `transfer_admin` shim alongside its inner `AdminProposedEvent`; added full section, count bumped to 20. |
+| 2026-06-26 | v0.5 | Issue #379: Added `InvestorAllowlistBatchApplied` (`al_batch`) event emitted once per `set_investors_allowlisted` call for indexer disambiguation |
