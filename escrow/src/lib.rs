@@ -211,6 +211,11 @@ pub enum DataKey {
     AllowlistActive,
     /// Whether a specific address is permitted to fund when [`DataKey::AllowlistActive`] is true.
     InvestorAllowlisted(Address),
+    /// Ledger timestamp after which [`LiquifactEscrow::clear_legal_hold`] may be called.
+    /// Set by [`LiquifactEscrow::request_clear_legal_hold`]; cleared by
+    /// [`LiquifactEscrow::cancel_clear_legal_hold`].
+    /// Absent ⇒ no pending clear request.
+    LegalHoldClearableAt,
 }
 
 // --- Data types ---
@@ -454,6 +459,14 @@ pub struct InvestorAllowlistChanged {
     pub investor: Address,
     /// `1` = allowed, `0` = blocked.
     pub allowed: u32,
+}
+
+#[contractevent]
+pub struct LegalHoldClearCancelled {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
 }
 
 #[contract]
@@ -1086,6 +1099,108 @@ impl LiquifactEscrow {
     /// Convenience alias for [`LiquifactEscrow::set_legal_hold`] with `active = false`.
     pub fn clear_legal_hold(env: Env) {
         Self::set_legal_hold(env, false);
+    }
+
+    /// Clear the legal hold after the timelock delay has expired.
+    ///
+    /// Requires [`DataKey::LegalHoldClearableAt`] to be set and the current
+    /// ledger timestamp to be >= that value. This is the timelocked path;
+    /// [`LiquifactEscrow::set_legal_hold`] with `active = false` remains
+    /// available as an immediate emergency override.
+    ///
+    /// **Authorization:** [`InvoiceEscrow::admin`].
+    ///
+    /// # Panics
+    /// - If no clear request is pending.
+    /// - If the timelock has not yet expired.
+    pub fn clear_legal_hold_after_delay(env: Env) {
+        let escrow = Self::get_escrow(env.clone());
+        escrow.admin.require_auth();
+
+        let clearable_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LegalHoldClearableAt)
+            .expect("No pending clear request");
+
+        let now = env.ledger().timestamp();
+        assert!(now >= clearable_at, "Timelock not yet expired");
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::LegalHoldClearableAt);
+
+        Self::set_legal_hold(env, false);
+    }
+
+    /// Delay (seconds) between [`LiquifactEscrow::request_clear_legal_hold`] and when
+    /// [`LiquifactEscrow::clear_legal_hold`] becomes executable.
+    pub const LEGAL_HOLD_CLEAR_DELAY: u64 = 86_400;
+
+    /// Request to clear the legal hold after a timelock delay.
+    ///
+    /// Writes [`DataKey::LegalHoldClearableAt`] = `now + LEGAL_HOLD_CLEAR_DELAY`.
+    /// The hold remains active until [`LiquifactEscrow::clear_legal_hold`] is called
+    /// at or after that timestamp.
+    ///
+    /// **Authorization:** [`InvoiceEscrow::admin`].
+    ///
+    /// # Panics
+    /// If a clear request is already pending (i.e. [`DataKey::LegalHoldClearableAt`] is set).
+    pub fn request_clear_legal_hold(env: Env) {
+        let escrow = Self::get_escrow(env.clone());
+        escrow.admin.require_auth();
+
+        assert!(
+            !env.storage().instance().has(&DataKey::LegalHoldClearableAt),
+            "Clear request already pending"
+        );
+
+        let now = env.ledger().timestamp();
+        let clearable_at = now
+            .checked_add(Self::LEGAL_HOLD_CLEAR_DELAY)
+            .expect("clearable_at overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LegalHoldClearableAt, &clearable_at);
+    }
+
+    /// Cancel a pending legal-hold clear request.
+    ///
+    /// Removes [`DataKey::LegalHoldClearableAt`], aborting the timelock. The hold
+    /// stays active. A fresh [`LiquifactEscrow::request_clear_legal_hold`] restarts
+    /// the full delay.
+    ///
+    /// **Authorization:** [`InvoiceEscrow::admin`].
+    ///
+    /// # Panics
+    /// If no clear request is pending.
+    pub fn cancel_clear_legal_hold(env: Env) {
+        let escrow = Self::get_escrow(env.clone());
+        escrow.admin.require_auth();
+
+        assert!(
+            env.storage().instance().has(&DataKey::LegalHoldClearableAt),
+            "No pending clear request to cancel"
+        );
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::LegalHoldClearableAt);
+
+        LegalHoldClearCancelled {
+            name: symbol_short!("lh_cancel"),
+            invoice_id: escrow.invoice_id.clone(),
+        }
+        .publish(&env);
+    }
+
+    /// Get the pending clear timestamp, if any.
+    pub fn get_legal_hold_clearable_at(env: Env) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LegalHoldClearableAt)
     }
 
     pub fn update_funding_target(env: Env, new_target: i128) -> InvoiceEscrow {
