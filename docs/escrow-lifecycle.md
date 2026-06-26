@@ -142,8 +142,9 @@ their principal:
 2. Each investor calls `refund(investor)` — transfers exactly `DataKey::InvestorContribution`
    back to the investor via `external_calls::transfer_funding_token_with_balance_checks`.
 3. `InvestorContribution` is zeroed after transfer (checks-effects-interactions pattern).
-4. `DataKey::InvestorRefunded` is set to `true` — `is_investor_refunded()` returns `true`.
-5. A second `refund()` call panics with `"no contribution to refund"` (contribution is 0).
+4. `DataKey::DistributedPrincipal` is incremented by the refunded amount. This feeds the `sweep_terminal_dust` liability floor.
+5. `DataKey::InvestorRefunded` is set to `true` — `is_investor_refunded()` returns `true`.
+6. A second `refund()` call panics with `"no contribution to refund"` (contribution is 0).
 
 ### Invariants
 

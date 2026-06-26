@@ -3690,3 +3690,173 @@ fn test_is_fully_funded_multiple_contributions_reaching_target() {
     client.fund(&inv_c, &(TARGET - 2 * (TARGET / 3)));
     assert!(client.is_fully_funded());
 }
+
+#[test]
+fn test_refund_fails_when_not_cancelled_or_unauthorized() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV001"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    token.stellar.mint(&investor, &1000);
+
+    env.mock_all_auths();
+    client.fund(&investor, &1000);
+
+    env.mock_auths(&[]);
+    assert!(client.try_refund(&investor).is_err());
+
+    env.mock_all_auths();
+    assert_contract_error(
+        client.try_refund(&investor),
+        EscrowError::RefundNotCancelled,
+    );
+}
+
+#[test]
+fn test_refund_emits_event_and_increments_distributed_principal() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_REFUND"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    token.stellar.mint(&investor, &1000);
+
+    env.mock_all_auths();
+    client.fund(&investor, &1000);
+    client.cancel_funding();
+
+    assert_eq!(client.get_distributed_principal(), 0);
+    assert_eq!(client.is_investor_refunded(&investor), false);
+
+    client.refund(&investor);
+
+    assert_eq!(client.get_distributed_principal(), 1000);
+    assert_eq!(client.is_investor_refunded(&investor), true);
+
+    let events = env.events().all().filter_by_contract(&client.address);
+    let last_event = events.events().last().unwrap();
+    // Verify it's the refunded event
+    assert_eq!(
+        last_event.1.get(0).unwrap().into_val(&env),
+        soroban_sdk::symbol_short!("refunded").into_val(&env)
+    );
+}
+
+#[test]
+fn test_refund_double_spend_fails() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_REFUND"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    token.stellar.mint(&investor, &1000);
+
+    env.mock_all_auths();
+    client.fund(&investor, &1000);
+    client.cancel_funding();
+
+    client.refund(&investor);
+    assert_contract_error(
+        client.try_refund(&investor),
+        EscrowError::NoContributionToRefund,
+    );
+}
+
+#[test]
+fn test_refund_moves_tokens() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let token = install_stellar_asset_token(&env);
+    let treasury = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "INV_REFUND"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let investor = Address::generate(&env);
+    token.stellar.mint(&investor, &1000);
+
+    env.mock_all_auths();
+    client.fund(&investor, &1000);
+
+    assert_eq!(token.token.balance(&investor), 0);
+    assert_eq!(token.token.balance(&client.address), 1000);
+
+    client.cancel_funding();
+    client.refund(&investor);
+
+    assert_eq!(token.token.balance(&investor), 1000);
+    assert_eq!(token.token.balance(&client.address), 0);
+}
