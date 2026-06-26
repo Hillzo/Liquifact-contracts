@@ -620,3 +620,19 @@ subsequent `fund()` call).
 - **No `require_auth`** — the investor address is not required to sign.
 - **No storage writes** — returns the first failing code without mutating state.
 - **Advisory only** — callers must still handle `fund()` reverting on race conditions.
+
+---
+
+## Admin handover views
+
+### `get_pending_admin() → Option<Address>`
+
+**Storage key:** `DataKey::PendingAdmin`
+
+Returns the proposed successor admin waiting for `accept_admin`, or `None` when no handover is in progress.
+
+### `get_pending_admin_expiry() → Option<u64>`
+
+**Storage key:** `DataKey::PendingAdminExpiry`
+
+Returns the ledger timestamp after which `accept_admin` rejects with `AdminProposalExpired` (code 85). Acceptance is allowed while `ledger.timestamp() <= expiry` (inclusive). Absent when no proposal is active.

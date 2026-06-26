@@ -1,4 +1,4 @@
-﻿use super::super::external_calls::transfer_funding_token_with_balance_checks;
+use super::super::external_calls::transfer_funding_token_with_balance_checks;
 use super::*;
 use soroban_sdk::{Address, Env, MuxedAddress};
 
@@ -199,7 +199,7 @@ fn test_edge_case_maximum_amount_transfer() {
     assert_eq!(treasury_after, large_amount);
 }
 
-// ÔöÇÔöÇ Liability floor tests for sweep_terminal_dust ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+// ── Liability floor tests for sweep_terminal_dust ────────────────────────────
 
 fn setup_cancelled_with_token<'a>(
     env: &'a Env,
@@ -221,7 +221,6 @@ fn setup_cancelled_with_token<'a>(
         &token.id,
         &None,
         &treasury,
-        &None,
         &None,
         &None,
         &None,
@@ -250,11 +249,11 @@ fn sweep_liability_floor_allows_true_dust_after_all_refunded() {
     // Mint 1 extra unit of dust on top of the principal
     token.stellar.mint(&client.address, &1i128);
 
-    // Refund the investor ÔÇö this increments DistributedPrincipal by fund_amount
+    // Refund the investor — this increments DistributedPrincipal by fund_amount
     client.refund(&investor);
 
     // Now outstanding = funded_amount - distributed = 1000 - 1000 = 0
-    // balance = 1 (the dust), sweep_amt = 1, floor check: 1 - 1 >= 0 Ô£ô
+    // balance = 1 (the dust), sweep_amt = 1, floor check: 1 - 1 >= 0 ✓
     let swept = client.sweep_terminal_dust(&1i128);
     assert_eq!(swept, 1i128);
     assert_eq!(token.token.balance(&treasury), 1i128);
@@ -307,7 +306,6 @@ fn sweep_liability_floor_allows_sweep_of_excess_above_outstanding() {
         &None,
         &None,
         &None,
-        &None,
     );
 
     // Mint 1001 into contract: 500 for A, 500 for B, 1 dust
@@ -316,12 +314,12 @@ fn sweep_liability_floor_allows_sweep_of_excess_above_outstanding() {
     client.fund(&investor_b, &500i128);
     client.cancel_funding();
 
-    // Refund investor_a ÔåÆ distributed = 500, outstanding = 500
+    // Refund investor_a → distributed = 500, outstanding = 500
     client.refund(&investor_a);
     assert_eq!(client.get_distributed_principal(), 500i128);
 
     // balance = 501 (500 for B + 1 dust), outstanding = 500
-    // sweep of 1: 501 - 1 = 500 >= 500 Ô£ô
+    // sweep of 1: 501 - 1 = 500 >= 500 ✓
     let swept = client.sweep_terminal_dust(&1i128);
     assert_eq!(swept, 1i128);
     assert_eq!(token.token.balance(&treasury), 1i128);
@@ -355,7 +353,6 @@ fn sweep_liability_floor_blocks_sweep_that_would_eat_into_outstanding() {
         &None,
         &None,
         &None,
-        &None,
     );
 
     token.stellar.mint(&client.address, &1_001i128);
@@ -364,7 +361,7 @@ fn sweep_liability_floor_blocks_sweep_that_would_eat_into_outstanding() {
     client.cancel_funding();
     client.refund(&investor_a);
 
-    // balance = 501, outstanding = 500; sweep of 2 ÔåÆ 501 - 2 = 499 < 500 Ô£ù
+    // balance = 501, outstanding = 500; sweep of 2 → 501 - 2 = 499 < 500 ✗
     client.sweep_terminal_dust(&2i128);
 }
 
@@ -388,7 +385,6 @@ fn sweep_liability_floor_zero_funded_amount_allows_sweep() {
         &token.id,
         &None,
         &treasury,
-        &None,
         &None,
         &None,
         &None,
@@ -434,7 +430,6 @@ fn distributed_principal_accumulates_across_multiple_refunds() {
         &None,
         &None,
         &None,
-        &None,
     );
 
     token.stellar.mint(&client.address, &900i128);
@@ -454,7 +449,7 @@ fn distributed_principal_accumulates_across_multiple_refunds() {
     client.refund(&inv_c);
     assert_eq!(client.get_distributed_principal(), 900i128);
 
-    // All refunded ÔÇö outstanding = 0, any dust can be swept
+    // All refunded — outstanding = 0, any dust can be swept
     token.stellar.mint(&client.address, &5i128);
     let swept = client.sweep_terminal_dust(&5i128);
     assert_eq!(swept, 5i128);

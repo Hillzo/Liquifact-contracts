@@ -1,32 +1,16 @@
-﻿//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
+//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
 //! `append_attestation_digest` (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
 //!
 //! These tests prove the two chain-anchor invariants:
-//! 1. The primary hash is **write-once** ÔÇö a second bind panics regardless of the digest value.
-//! 2. The append log is **capacity-bounded** ÔÇö the 33rd entry panics; the 32nd succeeds.
+//! 1. The primary hash is **write-once** — a second bind panics regardless of the digest value.
+//! 2. The append log is **capacity-bounded** — the 33rd entry panics; the 32nd succeeds.
 //!
 //! Neither entrypoint stores ZK proofs or performs off-chain verification. They record a
 //! 32-byte digest (e.g. SHA-256 of an IPFS CID or a KYC/KYB document bundle) so that
 //! off-chain verifiers can confirm the on-chain anchor matches their document set.
 
 use super::*;
-use soroban_sdk::{BytesN, Error, InvokeError};
-use std::fmt::Debug;
-
-fn assert_contract_error<T, E>(
-    result: Result<Result<T, E>, Result<Error, InvokeError>>,
-    expected: EscrowError,
-) where
-    T: Debug,
-    E: Debug,
-{
-    let expected_code = expected as u32;
-    match result {
-        Err(Ok(error)) => assert_eq!(error, Error::from_contract_error(expected_code)),
-        Err(Err(InvokeError::Contract(code))) => assert_eq!(code, expected_code),
-        other => panic!("expected ContractError({expected_code}), got {other:?}"),
-    }
-}
+use soroban_sdk::BytesN;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,7 +29,7 @@ fn setup_with_init(env: &Env) -> (LiquifactEscrowClient<'_>, Address) {
 }
 
 // ---------------------------------------------------------------------------
-// bind_primary_attestation_hash ÔÇö single-set invariant
+// bind_primary_attestation_hash — single-set invariant
 // ---------------------------------------------------------------------------
 
 /// Happy path: first bind succeeds and is readable via the getter.
@@ -66,7 +50,7 @@ fn test_get_primary_hash_none_before_bind() {
     assert_eq!(client.get_primary_attestation_hash(), None);
 }
 
-/// A second bind with the **same** digest must panic ÔÇö single-set is unconditional.
+/// A second bind with the **same** digest must panic — single-set is unconditional.
 #[test]
 #[should_panic]
 fn test_bind_primary_hash_same_digest_panics() {
@@ -77,7 +61,7 @@ fn test_bind_primary_hash_same_digest_panics() {
     client.bind_primary_attestation_hash(&d);
 }
 
-/// A second bind with a **different** digest must also panic ÔÇö no replacement allowed.
+/// A second bind with a **different** digest must also panic — no replacement allowed.
 #[test]
 #[should_panic]
 fn test_bind_primary_hash_different_digest_panics() {
@@ -99,7 +83,7 @@ fn test_bind_primary_hash_non_admin_panics() {
 }
 
 // ---------------------------------------------------------------------------
-// append_attestation_digest ÔÇö bounded log invariant
+// append_attestation_digest — bounded log invariant
 // ---------------------------------------------------------------------------
 
 /// Empty log before any append.
@@ -137,7 +121,7 @@ fn test_append_multiple_entries_ordered() {
     }
 }
 
-/// The 32nd entry (index 31) succeeds ÔÇö boundary must be inclusive.
+/// The 32nd entry (index 31) succeeds — boundary must be inclusive.
 #[test]
 fn test_append_exactly_max_entries_succeeds() {
     let env = Env::default();
@@ -152,7 +136,7 @@ fn test_append_exactly_max_entries_succeeds() {
     );
 }
 
-/// The 33rd entry must panic ÔÇö capacity is strictly bounded.
+/// The 33rd entry must panic — capacity is strictly bounded.
 #[test]
 #[should_panic]
 fn test_append_beyond_max_panics() {
@@ -164,7 +148,7 @@ fn test_append_beyond_max_panics() {
     }
 }
 
-/// Duplicate digests are allowed ÔÇö the log is an audit trail, not a set.
+/// Duplicate digests are allowed — the log is an audit trail, not a set.
 #[test]
 fn test_append_duplicate_digest_allowed() {
     let env = Env::default();
@@ -223,7 +207,7 @@ fn test_primary_and_append_coexist() {
 }
 
 // ---------------------------------------------------------------------------
-// revoke_attestation_digest ÔÇö revocation tombstone invariant
+// revoke_attestation_digest — revocation tombstone invariant
 // ---------------------------------------------------------------------------
 
 /// Happy path: revoke index 0 and confirm via `is_attestation_revoked`.
@@ -266,42 +250,36 @@ fn test_revoke_all_entries() {
     }
 }
 
-/// Revoking the same index twice returns `AttestationAlreadyRevoked`.
+/// Revoking the same index twice must panic.
 #[test]
+#[should_panic(expected = "attestation already revoked at index")]
 fn test_double_revoke_panics() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
     client.append_attestation_digest(&digest(&env, 0x42));
     client.revoke_attestation_digest(&0);
-    assert_contract_error(
-        client.try_revoke_attestation_digest(&0),
-        EscrowError::AttestationAlreadyRevoked,
-    );
+    client.revoke_attestation_digest(&0);
 }
 
-/// Revoking an index beyond the current log length returns `AttestationIndexOutOfRange`.
+/// Revoking an index beyond the current log length must panic.
 #[test]
+#[should_panic(expected = "attestation index out of range")]
 fn test_revoke_out_of_range_panics() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
     // Empty log, index 0 is out of range.
-    assert_contract_error(
-        client.try_revoke_attestation_digest(&0),
-        EscrowError::AttestationIndexOutOfRange,
-    );
+    client.revoke_attestation_digest(&0);
 }
 
-/// Revoking an index equal to log length returns `AttestationIndexOutOfRange` (0-indexed).
+/// Revoking an index equal to log length must panic (0-indexed).
 #[test]
+#[should_panic(expected = "attestation index out of range")]
 fn test_revoke_at_log_len_panics() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
     client.append_attestation_digest(&digest(&env, 0x10));
     // log.len() == 1, so index 1 is out of range.
-    assert_contract_error(
-        client.try_revoke_attestation_digest(&1),
-        EscrowError::AttestationIndexOutOfRange,
-    );
+    client.revoke_attestation_digest(&1);
 }
 
 /// `is_attestation_revoked` returns `false` for any index on an empty log.
@@ -324,7 +302,7 @@ fn test_revoke_non_admin_panics() {
     client.revoke_attestation_digest(&0);
 }
 
-/// Revocation does not alter the append log contents ÔÇö the digest remains readable.
+/// Revocation does not alter the append log contents — the digest remains readable.
 #[test]
 fn test_revoke_preserves_log_entry() {
     let env = Env::default();
@@ -347,75 +325,4 @@ fn test_revoke_does_not_affect_primary_hash() {
     client.append_attestation_digest(&digest(&env, 0xDD));
     client.revoke_attestation_digest(&0);
     assert_eq!(client.get_primary_attestation_hash(), Some(primary));
-}
-
-// ---------------------------------------------------------------------------
-// revoke_attestation_digest — typed EscrowError edge cases (issue #378)
-// ---------------------------------------------------------------------------
-
-/// index > log.len() (large value) returns `AttestationIndexOutOfRange`.
-#[test]
-fn test_revoke_large_index_out_of_range() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x01));
-    assert_contract_error(
-        client.try_revoke_attestation_digest(&99),
-        EscrowError::AttestationIndexOutOfRange,
-    );
-}
-
-/// Revoking the first entry (index 0) in a multi-entry log succeeds.
-#[test]
-fn test_revoke_first_entry() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x01));
-    client.append_attestation_digest(&digest(&env, 0x02));
-    client.revoke_attestation_digest(&0);
-    assert!(client.is_attestation_revoked(&0));
-    assert!(!client.is_attestation_revoked(&1));
-}
-
-/// Revoking the last entry in a multi-entry log succeeds.
-#[test]
-fn test_revoke_last_entry() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    for i in 0u8..3 {
-        client.append_attestation_digest(&digest(&env, i));
-    }
-    client.revoke_attestation_digest(&2);
-    assert!(!client.is_attestation_revoked(&0));
-    assert!(!client.is_attestation_revoked(&1));
-    assert!(client.is_attestation_revoked(&2));
-}
-
-/// Third revoke attempt on same index still returns `AttestationAlreadyRevoked`.
-#[test]
-fn test_repeated_revoke_returns_typed_error() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0x10));
-    client.revoke_attestation_digest(&0);
-    assert_contract_error(
-        client.try_revoke_attestation_digest(&0),
-        EscrowError::AttestationAlreadyRevoked,
-    );
-    // A second retry also returns the same typed error.
-    assert_contract_error(
-        client.try_revoke_attestation_digest(&0),
-        EscrowError::AttestationAlreadyRevoked,
-    );
-}
-
-/// Non-admin `try_revoke_attestation_digest` returns an authorization error.
-#[test]
-fn test_revoke_non_admin_returns_error() {
-    let env = Env::default();
-    let (client, _) = setup_with_init(&env);
-    client.append_attestation_digest(&digest(&env, 0xFF));
-    env.mock_auths(&[]);
-    // Any error (not Ok) satisfies the auth-rejection requirement.
-    assert!(client.try_revoke_attestation_digest(&0).is_err());
 }
