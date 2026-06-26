@@ -32,6 +32,7 @@ re-implementing storage reads to guarantee identical semantics.
 - [is_funding_expired](#is_funding_expired--bool)
 - [get_min_contribution_floor](#get_min_contribution_floor--i128)
 - [get_max_unique_investors_cap](#get_max_unique_investors_cap--optionu32)
+- [get_remaining_investor_slots](#get_remaining_investor_slots--optionu32)
 - [get_max_per_investor_cap](#get_max_per_investor_cap--optioni128)
 
 **Maturity & Settlement:**
@@ -359,6 +360,21 @@ Returns the optional cap on distinct investor addresses. Reflects the current st
 **Return value:**
 - `Some(u32)` when configured.
 - `None` when no cap was set at `init`.
+
+---
+
+### `get_remaining_investor_slots() -> Option<u32>`
+
+**Signature:** `pub fn get_remaining_investor_slots(env: Env) -> Option<u32>`
+
+Returns the number of remaining investor slots before the `MaxUniqueInvestorsCap` is reached. This safely resolves the gap between the cap and the `get_unique_funder_count`. 
+
+**Requires initialization:** No  
+**Default when absent:** `None` (unlimited investors)
+
+**Return value:**
+- `None` when no cap is configured (i.e., the escrow accepts unlimited distinct investors).
+- `Some(u32)` indicating the exact remaining capacity of new distinct investors. Calculated as `cap - unique_funder_count`. Floored at zero (saturating subtraction) ensuring it stays completely consistent and safe even if the cap is reduced via `lower_max_unique_investors`.
 
 ---
 
