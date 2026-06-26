@@ -141,9 +141,39 @@ pub const SCHEMA_VERSION: u32 = 6;
 /// Revocation via [`LiquifactEscrow::revoke_attestation_digest`] does not consume a slot.
 pub const MAX_ATTESTATION_APPEND_ENTRIES: u32 = 32;
 
-/// Upper bound on batch allowlist mutation entries to keep storage/CPU bounded.
-/// Mirrors the spirit of `MAX_ATTESTATION_APPEND_ENTRIES` to limit per-call work.
-pub const MAX_INVESTOR_ALLOWLIST_BATCH: u32 = 32;
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Symbol,
+};
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
+
+/// Maximum invoice `amount` accepted by [`LiquifactEscrow::init`].
+///
+/// # Derivation (overflow-free coupon math)
+///
+/// `compute_investor_payout` uses this integer math (see docs/escrow-pro-rata.md):
+///
+/// ```text
+/// coupon       = total_principal × yield_bps / 10_000  (floor)
+/// settle_pool  = total_principal + coupon
+/// gross_payout = contribution × settle_pool / total_principal
+/// ```
+///
+/// With `yield_bps ∈ [0, 10_000]`, we require that for worst-case
+/// `yield_bps = 10_000`:
+/// - `coupon = total_principal × 10_000 / 10_000 = total_principal`
+/// - `total_principal × 10_000` fits in `i128`
+/// - `settle_pool = 2 × total_principal` fits in `i128`
+/// - `contribution × settle_pool` fits in `i128` (with `contribution ≤ total_principal`)
+///
+/// Setting `MAX_INVOICE_AMOUNT = i128::MAX / 10_000` is sufficient because it implies:
+/// - `amount × 10_000 ≤ i128::MAX`
+/// - `2 × amount ≤ 2 × (i128::MAX / 10_000) < i128::MAX` for 10_000-bps coupon,
+///   and all intermediate `checked_*` operations are overflow-free by construction.
+pub const MAX_INVOICE_AMOUNT: i128 = i128::MAX / 10_000;
+
 
 /// Upper bound on [`LiquifactEscrow::fund_batch`] entries to keep storage/CPU bounded.
 /// Mirrors the spirit of `MAX_ATTESTATION_APPEND_ENTRIES` to limit per-call work.
