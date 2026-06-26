@@ -257,6 +257,26 @@ Maturity can only be changed while the escrow is **Open** (status == 0):
 This prevents retroactive maturity changes after investors have
 committed funds.
 
+## `update_funding_deadline` — Open State Only
+
+The optional funding deadline can be set, extended, or cleared while the escrow is **Open** (status == 0):
+
+| Status | `update_funding_deadline` result |
+|--------|----------------------------------|
+| 0 — Open | ✅ Allowed |
+| 1 — Funded | ❌ Panics: "Funding deadline can only be updated in Open state" |
+| 2 — Settled | ❌ Panics: "Funding deadline can only be updated in Open state" |
+| 3 — Withdrawn | ❌ Panics: "Funding deadline can only be updated in Open state" |
+| 4 — Cancelled | ❌ Panics: "Funding deadline can only be updated in Open state" |
+
+**Validation:**
+- `Some(d)`: `d` must be strictly greater than `env.ledger().timestamp()` (same rule as `init`).
+- `None`: removes `DataKey::FundingDeadline`; `is_funding_expired()` returns `false`.
+
+**Event:** `FundingDeadlineUpdated` carries `invoice_id`, `prior_deadline`, and `new_deadline`.
+
+Indexers should listen for this event to track deadline changes per invoice.
+
 ---
 
 ## `MaturityUpdatedEvent`

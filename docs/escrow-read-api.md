@@ -442,20 +442,44 @@ Returns the effective annualized yield in basis points locked in at the investor
 
 ---
 
-### `get_investor_claim_not_before(investor: Address) → u64`
+## `get_distributed_principal() → i128`
 
-**Storage key:** `DataKey::InvestorClaimNotBefore(investor)` (persistent)  
-**Signature:** `pub fn get_investor_claim_not_before(env: Env, investor: Address) -> u64`
+**Storage key:** `DataKey::DistributedPrincipal`
 
-Returns the earliest ledger timestamp at which `claim_investor_payout` may succeed for this investor.
+Returns the total principal already returned to investors via [`LiquifactEscrow::refund`].
 
-**Requires initialization:** No  
-**Default when absent:** `0` (no extra gate beyond settled status)  
-**Storage type:** Persistent
+- Used by [`LiquifactEscrow::sweep_terminal_dust`] to compute outstanding liabilities.
+- Absent ⇒ `0` (no refunds have occurred).
 
-**Return value:**
-- `0` for simple `fund` deposits or when `committed_lock_secs == 0`.
-- `now + committed_lock_secs` at deposit time for tiered commitments.
+---
+
+## `get_token_balance() → i128`
+
+**Storage key:** None (reads [`DataKey::FundingToken`] and queries token contract)
+
+Returns the contract's current funding-token balance for on-chain custody reconciliation.
+
+- Emits [`EscrowError::FundingTokenNotSet`] if called before `init`.
+- **Pure read** — no authorization required, no state mutation.
+
+### Reconciliation relationship
+
+Auditors can reconcile on-chain custody against recorded liabilities:
+
+```
+balance = get_token_balance()
+funded_amount = get_escrow().funded_amount
+distributed_principal = get_distributed_principal()
+
+outstanding_liability = funded_amount - distributed_principal
+excess_balance = balance - outstanding_liability  // tokens available for sweep
+
+// After the cancelled escrow's liability is fully discharged (all refunds complete):
+// balance == distributed_principal == funded_amount  (or less if partial sweep occurred)
+```
+
+This view surfaces the balance already consulted internally by [`LiquifactEscrow::sweep_terminal_dust`]
+and [`LiquifactEscrow::withdraw`] for liability-floor enforcement.
 
 ---
 

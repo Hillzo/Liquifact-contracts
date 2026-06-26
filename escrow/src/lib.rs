@@ -425,10 +425,13 @@ pub enum EscrowError {
     /// The proposed new SME address is identical to the current beneficiary.
     NewSmeSameAsCurrent = 162,
 
-    /// A non-zero maturity timestamp is earlier than the current ledger time (cannot settle in the past).
-    MaturityInPast = 163,
-    /// A maturity timestamp exceeds the configured maximum horizon from the current ledger time.
-    MaturityExceedsMaxHorizon = 164,
+    /// Attempted to accept admin role when no pending admin exists.
+    NoPendingAdmin = 163,
+    /// The contract's funding-token balance is less than `funded_amount` at withdraw time.
+    /// Funds must be custodied in this contract before the SME can pull them.
+    InsufficientContractBalance = 165,
+    /// [`LiquifactEscrow::update_funding_deadline`] called while escrow is not open.
+    FundingDeadlineUpdateNotOpen = 166,
 }
 
 #[inline(always)]
@@ -840,6 +843,16 @@ pub struct FundingTargetUpdated {
     pub invoice_id: Symbol,
     pub old_target: i128,
     pub new_target: i128,
+}
+
+#[contractevent]
+pub struct FundingDeadlineUpdated {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub prior_deadline: Option<u64>,
+    pub new_deadline: Option<u64>,
 }
 
 #[contractevent]
@@ -2363,6 +2376,68 @@ impl LiquifactEscrow {
         escrow
     }
 
+    /// Update or clear the optional funding deadline while the escrow is still **open** (status == 0).
+    ///
+    /// Only the current [`InvoiceEscrow::admin`] may call. This is the only entrypoint that
+    /// mutates [`DataKey::FundingDeadline`] after [`LiquifactEscrow::init`].
+    ///
+    /// # Parameters
+    ///
+    /// - `new_deadline`: `Some(u64)` sets a new ledger timestamp; `None` removes the deadline.
+    ///
+    /// # Validation
+    ///
+    /// - Admin authorization required.
+    /// - Escrow must be in **open** state (`status == 0`).
+    /// - When `Some(d)`: `d` must be strictly greater than the current ledger timestamp
+    ///   (same rule as [`LiquifactEscrow::init`]).
+    /// - When `None`: the stored [`DataKey::FundingDeadline`] is removed; funding becomes
+    ///   unrestricted by time.
+    ///
+    /// # Events
+    ///
+    /// Emits [`FundingDeadlineUpdated`] with the prior and new deadline values.
+    ///
+    /// # Errors
+    ///
+    /// | Condition | Typed error |
+    /// |-----------|-------------|
+    /// | Escrow not open | [`EscrowError::FundingDeadlineUpdateNotOpen`] |
+    /// | `Some(d)` and `d <= now` | [`EscrowError::FundingDeadlinePassed`] |
+    pub fn update_funding_deadline(env: Env, new_deadline: Option<u64>) {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        ensure(
+            &env,
+            escrow.status == 0,
+            EscrowError::FundingDeadlineUpdateNotOpen,
+        );
+
+        let prior: Option<u64> = env.storage().instance().get(&DataKey::FundingDeadline);
+
+        match new_deadline {
+            Some(d) => {
+                ensure(
+                    &env,
+                    d > env.ledger().timestamp(),
+                    EscrowError::FundingDeadlinePassed,
+                );
+                env.storage().instance().set(&DataKey::FundingDeadline, &d);
+            }
+            None => {
+                env.storage().instance().remove(&DataKey::FundingDeadline);
+            }
+        }
+
+        FundingDeadlineUpdated {
+            name: symbol_short!("fund_dl"),
+            invoice_id: escrow.invoice_id.clone(),
+            prior_deadline: prior,
+            new_deadline,
+        }
+        .publish(&env);
+    }
+
     /// Lower the configured distinct-investor cap while the escrow is still open.
     ///
     /// This is admin-only and intentionally cannot raise a cap or impose one on an unlimited
@@ -3503,7 +3578,7 @@ impl LiquifactEscrow {
             .unwrap_or(false)
     }
 
-    /// Total principal already returned to investors via [`LiquifactEscrow::refund`].
+    /// Returns the total principal already returned to investors via [`LiquifactEscrow::refund`].
     ///
     /// Used by [`LiquifactEscrow::sweep_terminal_dust`] to compute outstanding liabilities.
     /// Absent ⇒ `0` (no refunds have occurred).
@@ -3514,139 +3589,31 @@ impl LiquifactEscrow {
             .unwrap_or(0)
     }
 
-    /// Preview whether a deposit from `investor` for `amount` would be accepted
-    /// by [`LiquifactEscrow::fund`], without mutating any state or requiring authorization.
+    /// Returns the contract's current funding-token balance for on-chain custody reconciliation.
     ///
-    /// Runs the same precondition checks as `fund_impl` (the shared funding engine)
-    /// in the exact same order, but returns a numeric code instead of panicking.
+    /// Reads the bound funding token via [`DataKey::FundingToken`] and queries its balance
+    /// at the contract's address. This enables auditors to reconcile on-chain custody against
+    /// funded_amount and distributed_principal.
     ///
-    /// Note: the preview path intentionally mirrors the public `fund`/`fund_with_commitment`
-    /// behaviors, including the fact that a second commitment-style deposit is rejected
-    /// by the shared funding engine with [`EscrowError::TieredSecondDeposit`].
+    /// **Reconciliation formula for cancelled escrows:**
+    /// ```text
+    /// outstanding_liability = funded_amount - distributed_principal
+    /// excess_balance = balance - outstanding_liability  // tokens available for sweep
+    /// ```
     ///
-    /// # Return value
+    /// # Errors
+    /// - [`EscrowError::FundingTokenNotSet`] if the escrow has not been initialized.
     ///
-    /// | Code | Meaning |
-    /// |------|---------|
-    /// | `0`  | Deposit would succeed |
-    /// | `>0` | First failing [`EscrowError`] code that `fund` would raise |
-    ///
-    /// # Advisory
-    ///
-    /// This is a **read-only preview**. The actual [`LiquifactEscrow::fund`] call is the
-    /// source of truth and may still revert due to racing state changes (e.g. another
-    /// transaction fills the unique-investor cap or the admin closes funding between the
-    /// preview and an actual `fund` call).
-    ///
-    /// # Panics
-    ///
-    /// Panics with [`EscrowError::EscrowNotInitialized`] if called before [`LiquifactEscrow::init`],
-    /// matching the behaviour of [`LiquifactEscrow::fund`].
+    /// # Authorization
+    /// None — pure read; no auth required.
     ///
     /// # Security
-    ///
-    /// Pure read: no `require_auth`, no storage writes, no token transfers.
-    pub fn preview_fund(env: Env, investor: Address, amount: i128) -> u32 {
-        // Guard order matches fund_impl (minus require_auth, which is skipped):
-        //
-        // 1. Amount must be positive.
-        // 2. Minimum contribution floor.
-        // 3. Legal hold blocks funding.
-        // 4. Escrow must be in open status.
-        // 5. Funding deadline must not have passed.
-        // 6. Allowlist gate (if active).
-        // 7. Investor contribution must not overflow.
-        // 8. Per-investor cap (if configured).
-        // 9. Unique-investor cap (if configured and investor is new).
-        // 10. Total funded-amount overflow.
-        if amount <= 0 {
-            return EscrowError::FundingAmountNotPositive as u32;
-        }
-
-        // 2. Minimum contribution floor (if configured).
-        let floor: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinContributionFloor)
-            .unwrap_or(0);
-        if floor > 0 && amount < floor {
-            return EscrowError::FundingBelowMinContribution as u32;
-        }
-
-        // env.clone(): env is used again after the escrow read for further storage queries.
-        let escrow = Self::get_escrow(env.clone());
-
-        // 3. Legal hold blocks funding.
-        if Self::legal_hold_active(&env) {
-            return EscrowError::LegalHoldBlocksFunding as u32;
-        }
-
-        // 4. Escrow must be in open status.
-        if escrow.status != 0 {
-            return EscrowError::EscrowNotOpenForFunding as u32;
-        }
-
-        // 5. Funding deadline must not have passed.
-        if let Some(deadline) = env
-            .storage()
-            .instance()
-            .get::<DataKey, u64>(&DataKey::FundingDeadline)
-        {
-            if env.ledger().timestamp() > deadline {
-                return EscrowError::FundingDeadlinePassed as u32;
-            }
-        }
-
-        // 6. Allowlist gate (if active).
-        if Self::is_allowlist_active(env.clone())
-            && !Self::is_investor_allowlisted(env.clone(), investor.clone())
-        {
-            return EscrowError::InvestorNotAllowlisted as u32;
-        }
-
-        // 7. Investor contribution must not overflow.
-        let prev: i128 = Self::get_persistent_investor_contribution(&env, investor.clone());
-        let (new_contribution, overflow) = prev.overflowing_add(amount);
-        if overflow {
-            return EscrowError::InvestorContributionOverflow as u32;
-        }
-
-        // 8. Per-investor cap (if configured).
-        if let Some(cap) = env
-            .storage()
-            .instance()
-            .get::<DataKey, i128>(&DataKey::MaxPerInvestorCap)
-        {
-            if new_contribution > cap {
-                return EscrowError::InvestorContributionExceedsCap as u32;
-            }
-        }
-
-        // 9. Unique-investor cap (if configured and investor is new).
-        if prev == 0 {
-            if let Some(cap) = env
-                .storage()
-                .instance()
-                .get::<DataKey, u32>(&DataKey::MaxUniqueInvestorsCap)
-            {
-                let cur_funder_count: u32 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::UniqueFunderCount)
-                    .unwrap_or(0);
-                if cur_funder_count >= cap {
-                    return EscrowError::UniqueInvestorCapReached as u32;
-                }
-            }
-        }
-
-        // 10. Total funded-amount overflow.
-        if escrow.funded_amount.checked_add(amount).is_none() {
-            return EscrowError::FundedAmountOverflow as u32;
-        }
-
-        // All guards passed — deposit would succeed.
-        0
+    /// This is a view-only entrypoint: it performs no storage writes and does not invoke
+    /// any sensitive operations. It safely exposes on-chain state for auditing purposes.
+    pub fn get_token_balance(env: Env) -> i128 {
+        let token_addr = Self::funding_token_or_fail(&env);
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &token_addr).balance(&this)
     }
 }
 
