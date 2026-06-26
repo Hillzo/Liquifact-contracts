@@ -175,7 +175,7 @@ liquifact-contracts/
 | `set_allowlist_active` | Admin enables/disables the investor allowlist gate. |
 | `set_investor_allowlisted` | Admin sets per-address allowlist status. |
 | `set_investors_allowlisted` | Admin batch-sets allowlist status for multiple addresses. |
-| `bind_primary_attestation_hash` | Admin sets a single-write 32-byte digest. |
+| `bind_primary_attestation_hash` | Admin sets a single-write 32-byte digest (single-set guarantee). |
 | `append_attestation_digest` | Admin appends to bounded audit log. |
 | `record_sme_collateral_commitment` | SME records collateral pledge (metadata only). |
 | `propose_admin` | Step 1 of admin handover — sets `DataKey::PendingAdmin` (admin auth). |

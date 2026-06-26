@@ -1,4 +1,4 @@
-﻿//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
+//! Attestation tests: `bind_primary_attestation_hash` (single-set) and
 //! `append_attestation_digest` (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
 //!
 //! These tests prove the two chain-anchor invariants:
@@ -55,7 +55,18 @@ fn test_bind_primary_hash_stores_and_reads() {
     let (client, _) = setup_with_init(&env);
     let d = digest(&env, 0xAB);
     client.bind_primary_attestation_hash(&d);
-    assert_eq!(client.get_primary_attestation_hash(), Some(d));
+    assert_eq!(client.get_primary_attestation_hash(), Some(d.clone()));
+
+    // Assert the `att_bind` event was emitted
+    let events = env.events().all().filter_by_contract(&client.address);
+    let last_event = events.events().last().unwrap();
+    use soroban_sdk::{symbol_short, IntoVal, Val, Vec};
+    let expected_topics: Vec<Val> =
+        (symbol_short!("att_bind"), client.get_escrow().invoice_id).into_val(&env);
+    assert_eq!(
+        last_event,
+        (client.address.clone(), expected_topics, d.into_val(&env))
+    );
 }
 
 /// Before any bind the getter returns `None`.
@@ -66,36 +77,44 @@ fn test_get_primary_hash_none_before_bind() {
     assert_eq!(client.get_primary_attestation_hash(), None);
 }
 
-/// A second bind with the **same** digest must panic ÔÇö single-set is unconditional.
+/// A second bind with the **same** digest must fail ÔÇö single-set is unconditional.
 #[test]
-#[should_panic]
-fn test_bind_primary_hash_same_digest_panics() {
+fn test_bind_primary_hash_same_digest_fails() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
     let d = digest(&env, 0x01);
     client.bind_primary_attestation_hash(&d);
-    client.bind_primary_attestation_hash(&d);
+
+    let res = client.try_bind_primary_attestation_hash(&d);
+    assert_contract_error(res, EscrowError::PrimaryAttestationAlreadyBound);
+    assert_eq!(client.get_primary_attestation_hash(), Some(d));
 }
 
-/// A second bind with a **different** digest must also panic ÔÇö no replacement allowed.
+/// A second bind with a **different** digest must also fail ÔÇö no replacement allowed.
 #[test]
-#[should_panic]
-fn test_bind_primary_hash_different_digest_panics() {
+fn test_bind_primary_hash_different_digest_fails() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
-    client.bind_primary_attestation_hash(&digest(&env, 0x01));
-    client.bind_primary_attestation_hash(&digest(&env, 0x02));
+    let first = digest(&env, 0x01);
+    client.bind_primary_attestation_hash(&first);
+
+    let second = digest(&env, 0x02);
+    let res = client.try_bind_primary_attestation_hash(&second);
+    assert_contract_error(res, EscrowError::PrimaryAttestationAlreadyBound);
+    assert_eq!(client.get_primary_attestation_hash(), Some(first));
 }
 
 /// Non-admin caller must not be able to bind the primary hash.
 #[test]
-#[should_panic]
-fn test_bind_primary_hash_non_admin_panics() {
+fn test_bind_primary_hash_non_admin_fails() {
     let env = Env::default();
     let (client, _) = setup_with_init(&env);
     // Clear all mocks so auth is enforced for the next call.
     env.mock_auths(&[]);
-    client.bind_primary_attestation_hash(&digest(&env, 0xFF));
+    let d = digest(&env, 0xFF);
+
+    assert!(client.try_bind_primary_attestation_hash(&d).is_err());
+    assert_eq!(client.get_primary_attestation_hash(), None);
 }
 
 // ---------------------------------------------------------------------------
