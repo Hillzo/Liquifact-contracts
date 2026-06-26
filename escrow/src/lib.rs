@@ -414,9 +414,6 @@ pub enum EscrowError {
     LegalHoldClearNotReady = 151,
     /// Computing the legal-hold clear ready-at timestamp would overflow.
     LegalHoldClearDelayOverflow = 152,
-    /// Funding deadline has passed, new deposits are rejected.
-    FundingDeadlinePassed = 153,
-
     /// A legal hold blocks rotating the beneficiary (SME) address.
     LegalHoldBlocksBeneficiaryRotation = 160,
     /// Beneficiary rotation was attempted while the escrow was not in a
@@ -429,7 +426,9 @@ pub enum EscrowError {
     NoPendingAdmin = 163,
     /// The contract's funding-token balance is less than `funded_amount` at withdraw time.
     /// Funds must be custodied in this contract before the SME can pull them.
-    InsufficientContractBalance = 165,
+    InsufficientContractBalance = 164,
+    /// Funding deadline has passed, new deposits are rejected.
+    FundingDeadlinePassed = 165,
 }
 
 #[inline(always)]
@@ -1390,16 +1389,21 @@ impl LiquifactEscrow {
         Self::get_escrow(env).maturity > 0
     }
 
-    /// Returns the configured maximum maturity horizon for this escrow instance.
+    /// Returns `true` when the escrow is immediately settleable by the SME:
+    /// - `status == 1` (funded), **and**
+    /// - maturity is zero or the ledger timestamp has reached `maturity`, **and**
+    /// - no legal hold is active.
     ///
-    /// Falls back to [`DEFAULT_MATURITY_MAX_HORIZON_SECS`] when no explicit value was set at init.
-    /// The horizon is stored at [`DataKey::MaturityMaxHorizon`] and can be updated via
-    /// [`LiquifactEscrow::update_maturity_max_horizon`].
-    pub fn get_maturity_max_horizon(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get::<DataKey, u64>(&DataKey::MaturityMaxHorizon)
-            .unwrap_or(DEFAULT_MATURITY_MAX_HORIZON_SECS)
+    /// This is a pure read — it does not mutate state or require authorization.
+    pub fn is_settleable(env: Env) -> bool {
+        if Self::legal_hold_active(&env) {
+            return false;
+        }
+        let escrow = Self::get_escrow(env.clone());
+        if escrow.status != 1 {
+            return false;
+        }
+        escrow.maturity == 0 || env.ledger().timestamp() >= escrow.maturity
     }
 
     /// Move up to `amount` (capped by balance and [`MAX_DUST_SWEEP_AMOUNT`]) of the **funding token**
