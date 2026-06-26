@@ -175,7 +175,7 @@ proptest! {
         let (token, treasury) = free_addresses(&env);
 
         let max_per_investor = if caps_present { Some(per_inv_cap.min(funding_target)) } else { None };
-        let max_unique_investors = if caps_present { Some(uniq_cap.min(6)) } else { None };
+        let max_unique_investors: Option<u64> = if caps_present { Some(uniq_cap.min(6) as u64) } else { None };
 
         // Optional tiered yield is not required for these invariants; keep it off.
         client.init(
@@ -192,7 +192,6 @@ proptest! {
             &None,
             &max_unique_investors,
             &max_per_investor,
-            &None,
             &None,
         );
 
@@ -239,7 +238,7 @@ proptest! {
             }
             if expected_contribs[ix] == 0 {
                 if let Some(uc) = max_unique_investors {
-                    if distinct_funders.len() as u32 >= uc {
+                    if distinct_funders.len() as u64 >= uc {
                         break;
                     }
                 }
@@ -286,7 +285,7 @@ proptest! {
                 prop_assert!(expected_contribs[ix] <= cap);
             }
             if let Some(uc) = max_unique_investors {
-                prop_assert!(distinct_funders.len() as u32 <= uc);
+                prop_assert!(distinct_funders.len() as u64 <= uc);
             }
 
             // Invariant: status flip correctness.

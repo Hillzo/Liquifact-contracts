@@ -3,8 +3,8 @@ use crate::{
     LiquifactEscrowClient,
 };
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
-    Address, BytesN, Env, Error, Event, InvokeError, Vec as SorobanVec,
+    testutils::{Address as _, Events as _, Ledger},
+    Address, BytesN, Env, Error, InvokeError, Vec as SorobanVec,
 };
 
 // ---------------------------------------------------------------------------
