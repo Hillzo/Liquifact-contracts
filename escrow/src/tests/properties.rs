@@ -1535,6 +1535,8 @@ fn cancelled_escrow<'a>(
         &None,
         &None,
         &None,
+        &None,
+        &None,
     );
     for (investor, amount) in contributions {
         client.fund(investor, amount);
@@ -1609,5 +1611,446 @@ fn fuzz_dust_sweep_liability_floor() {
         } else {
             assert!(after >= floor);
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Aggregate payout bound invariants — issue #483
+//
+// Invariant (uniform yield):
+//   Σ payout_i ≤ settle_pool   where settle_pool = principal + principal × yield_bps / 10_000
+//
+// Invariant (tiered / mixed yield):
+//   Σ payout_i ≤ Σ (contribution_i × settle_pool_i / total_principal)  [exact]
+//
+//   Because each floor-division payout_i ≤ exact_i, the aggregate can never
+//   exceed the sum of per-investor exact entitlements, which in turn is always
+//   ≤ total_principal × (1 + max_yield_bps / 10_000).
+//
+// Snapshot-denominator consistency:
+//   Every `compute_investor_payout` call uses the same `FundingCloseSnapshot`
+//   (single-write immutability). The snapshot is read before and after all payout
+//   calls are made; it must be identical, proving the denominator cannot shift
+//   between investor claims.
+//
+// Edge cases covered:
+//   - Single investor, equal split, skewed split, highly skewed, many small investors
+//   - Zero yield, maximum yield, tiered/mixed yield
+//   - Funding exactly at target
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper: build a yield-tier table with two tiers for tiered-payout tests.
+///
+/// Returns `(base_yield_bps, tier1_yield_bps, tier2_yield_bps, tier1_lock_secs, tier2_lock_secs, SorobanVec<YieldTier>)`.
+fn two_tier_table(env: &Env, tier1_bps: i64, tier2_bps: i64) -> soroban_sdk::Vec<YieldTier> {
+    let mut tiers = soroban_sdk::Vec::new(env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 60,
+        yield_bps: tier1_bps,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 120,
+        yield_bps: tier2_bps,
+    });
+    tiers
+}
+
+/// Deploy and settle an escrow with tiered yield.
+///
+/// `base_yield_bps` — fallback for plain `fund()` investors.
+/// `contributions`  — `(Address, amount, lock_secs)` where `lock_secs > 0` triggers
+///                    `fund_with_commitment`; `lock_secs == 0` uses plain `fund`.
+fn tiered_funded_and_settled_escrow<'a>(
+    env: &'a Env,
+    invoice_id: &str,
+    base_yield_bps: i64,
+    tier1_bps: i64,
+    tier2_bps: i64,
+    contributions: &[(Address, i128, u64)],
+) -> super::LiquifactEscrowClient<'a> {
+    let client = deploy(env);
+    let admin = Address::generate(env);
+    let sme = Address::generate(env);
+    let (token, treasury) = free_addresses(env);
+
+    let total: i128 = contributions.iter().map(|(_, a, _)| a).sum();
+    let yield_tiers = two_tier_table(env, tier1_bps, tier2_bps);
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(env, invoice_id),
+        &sme,
+        &total,
+        &base_yield_bps,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &Some(yield_tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    for (investor, amount, lock_secs) in contributions {
+        if *lock_secs == 0 {
+            client.fund(investor, amount);
+        } else {
+            client.fund_with_commitment(investor, amount, lock_secs);
+        }
+    }
+    client.settle();
+    client
+}
+
+/// Per-investor exact (rational) payout upper bound.
+///
+/// `contribution × (total_principal + total_principal × yield_bps_i / 10_000) / total_principal`
+///
+/// Uses integer arithmetic identical to the contract; the result equals the floor
+/// of the exact rational, so this is the tightest integer upper bound for a single investor.
+fn exact_investor_payout(contribution: i128, total_principal: i128, yield_bps_i: i64) -> i128 {
+    let coupon = total_principal * (yield_bps_i as i128) / 10_000;
+    let settle_pool_i = total_principal + coupon;
+    contribution * settle_pool_i / total_principal
+}
+
+// ── proptest: tiered / mixed yield, snapshot-denominator consistency ──────────
+
+proptest! {
+    /// # Aggregate payout bound — tiered and uniform yield (issue #483)
+    ///
+    /// Generates arbitrary investor sets where some investors commit via
+    /// `fund_with_commitment` (acquiring a tiered yield) and others use plain
+    /// `fund` (base yield). Asserts:
+    ///
+    /// 1. `Σ payout_i ≤ Σ exact_i`  — floor rounding never over-distributes.
+    /// 2. The `FundingCloseSnapshot` is identical before and after all payout
+    ///    reads — the denominator cannot shift between investor claims.
+    /// 3. `Σ payout_i ≤ total_principal × (1 + max_yield_bps / 10_000)`
+    ///    — aggregate cannot exceed the maximum possible settle pool.
+    #[test]
+    fn prop_aggregate_payout_le_settle_pool_tiered(
+        n_investors in 2usize..=8usize,
+        seed in 0u64..u64::MAX,
+        base_yield_bps in 0i64..=800i64,
+        // tier yields must be >= base and <= 10_000
+        tier1_bps in 801i64..=5_000i64,
+        tier2_bps in 5_001i64..=10_000i64,
+        // probability that an investor uses fund_with_commitment: 0=none, 1=half, 2=all
+        commitment_mode in 0u8..=2u8,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let mut rng = SplitMix64::new(seed);
+
+        let investors: Vec<Address> = (0..n_investors)
+            .map(|_| Address::generate(&env))
+            .collect();
+
+        let amounts: Vec<i128> = (0..n_investors)
+            .map(|_| rng.gen_i128_inclusive(1, 1_000_000))
+            .collect();
+
+        // Assign lock_secs per investor based on commitment_mode.
+        // lock 0  → plain fund (base yield)
+        // lock 61 → tier 1 (>= 60 secs)
+        // lock 121 → tier 2 (>= 120 secs)
+        let lock_secs: Vec<u64> = (0..n_investors)
+            .map(|i| match commitment_mode {
+                0 => 0u64, // all plain fund
+                1 => if i % 2 == 0 { 0u64 } else { 61u64 }, // alternating
+                _ => match i % 3 {
+                    0 => 0u64,
+                    1 => 61u64,
+                    _ => 121u64,
+                },
+            })
+            .collect();
+
+        let contributions: Vec<(Address, i128, u64)> = investors
+            .iter()
+            .cloned()
+            .zip(amounts.iter().cloned())
+            .zip(lock_secs.iter().cloned())
+            .map(|((addr, amt), lock)| (addr, amt, lock))
+            .collect();
+
+        let client = tiered_funded_and_settled_escrow(
+            &env,
+            "TIERPROP",
+            base_yield_bps,
+            tier1_bps,
+            tier2_bps,
+            &contributions,
+        );
+
+        // ── Snapshot consistency: read before and after all payout queries ──
+        let snap_before = client
+            .get_funding_close_snapshot()
+            .expect("FundingCloseSnapshot must exist after funding");
+        let total_principal = snap_before.total_principal;
+
+        // ── Compute all payouts ──
+        let payouts: Vec<i128> = investors
+            .iter()
+            .map(|inv| client.compute_investor_payout(inv))
+            .collect();
+
+        // Snapshot must be identical after all payout reads (denominator immutability).
+        let snap_after = client
+            .get_funding_close_snapshot()
+            .expect("FundingCloseSnapshot must still exist after payout reads");
+        prop_assert_eq!(
+            snap_before,
+            snap_after,
+            "FundingCloseSnapshot changed during payout reads — denominator shifted"
+        );
+
+        let payout_sum: i128 = payouts.iter().sum();
+
+        // ── Bound 1: each floor payout ≤ exact entitlement ──
+        let max_yield = tier2_bps.max(tier1_bps).max(base_yield_bps);
+        let max_settle_pool = {
+            let coupon = total_principal * (max_yield as i128) / 10_000;
+            total_principal + coupon
+        };
+        prop_assert!(
+            payout_sum <= max_settle_pool,
+            "aggregate payout {payout_sum} exceeded max possible settle_pool {max_settle_pool}"
+        );
+
+        // ── Bound 2: per-investor exact sum upper bound ──
+        let effective_yields: Vec<i64> = investors
+            .iter()
+            .zip(lock_secs.iter())
+            .map(|(_, &lock)| {
+                if lock == 0 {
+                    base_yield_bps
+                } else if lock >= 120 {
+                    tier2_bps
+                } else {
+                    tier1_bps
+                }
+            })
+            .collect();
+
+        let exact_sum: i128 = amounts
+            .iter()
+            .zip(effective_yields.iter())
+            .map(|(&amt, &yld)| exact_investor_payout(amt, total_principal, yld))
+            .sum();
+
+        prop_assert!(
+            payout_sum <= exact_sum,
+            "aggregate payout {payout_sum} exceeded exact entitlement sum {exact_sum}"
+        );
+
+        // ── Bound 3: each individual payout ≤ its own exact entitlement ──
+        let exact_payouts: Vec<i128> = amounts
+            .iter()
+            .zip(effective_yields.iter())
+            .map(|(&amt, &yld)| exact_investor_payout(amt, total_principal, yld))
+            .collect();
+        for (payout, exact) in payouts.iter().zip(exact_payouts.iter()) {
+            prop_assert!(
+                payout <= exact,
+                "investor payout {payout} exceeded individual exact entitlement {exact}"
+            );
+        }
+    }
+}
+
+// ── Deterministic edge cases ─────────────────────────────────────────────────
+
+/// Highly skewed: one dominant investor (99%) and one tiny investor (1%).
+/// Residue must be non-negative and bounded.
+#[test]
+fn payout_highly_skewed_contributions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let large = Address::generate(&env);
+    let small = Address::generate(&env);
+
+    // 99_001 + 999 = 100_000 (prime-adjacent to stress rounding)
+    let client = funded_and_settled_escrow(
+        &env,
+        "SKEW001",
+        1_000i64, // 10% yield
+        &[(large.clone(), 99_001i128), (small.clone(), 999i128)],
+    );
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    let settle_pool = settle_pool_for(snap.total_principal, 1_000);
+
+    let p_large = client.compute_investor_payout(&large);
+    let p_small = client.compute_investor_payout(&small);
+
+    assert!(p_large + p_small <= settle_pool, "skewed: aggregate > settle_pool");
+    assert!(settle_pool - p_large - p_small >= 0, "skewed: negative residue");
+    // Residue bounded by n_investors (each floor drops at most 1 unit).
+    assert!(
+        settle_pool - p_large - p_small < 2,
+        "skewed: residue {} >= n_investors",
+        settle_pool - p_large - p_small
+    );
+}
+
+/// Many small investors: 8 investors each contributing 1 unit.
+/// Verifies the aggregate and per-investor floor rounding stays in bounds.
+#[test]
+fn payout_many_small_investors_conservation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let n = 8usize;
+    let investors: Vec<Address> = (0..n).map(|_| Address::generate(&env)).collect();
+    // Each contributes 1; total = 8, yield = 8% → settle_pool = 8 + 0 = 8 (floor of 8*800/10_000 = 0)
+    // Use a yield that produces a non-zero coupon: yield_bps=1250 → coupon = 8*1250/10_000 = 1
+    // settle_pool = 9; payout per investor = 1*9/8 = 1 (floor); sum = 8 ≤ 9.
+    let pairs: Vec<(Address, i128)> = investors
+        .iter()
+        .cloned()
+        .zip(std::iter::repeat(1i128).take(n))
+        .collect();
+
+    let client = funded_and_settled_escrow(&env, "MANY001", 1_250i64, &pairs);
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    let settle_pool = settle_pool_for(snap.total_principal, 1_250);
+
+    let payout_sum: i128 = investors
+        .iter()
+        .map(|inv| client.compute_investor_payout(inv))
+        .sum();
+
+    assert!(payout_sum <= settle_pool, "many-small: sum > settle_pool");
+    let residue = settle_pool - payout_sum;
+    assert!(residue >= 0);
+    assert!(
+        residue < n as i128,
+        "many-small: residue {residue} >= n_investors {n}"
+    );
+}
+
+/// Single large, single tiny: extreme asymmetry stress-test for rounding.
+#[test]
+fn payout_single_large_single_tiny() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let large = Address::generate(&env);
+    let tiny = Address::generate(&env);
+
+    let client = funded_and_settled_escrow(
+        &env,
+        "ASYMM01",
+        500i64,
+        &[(large.clone(), 999_999i128), (tiny.clone(), 1i128)],
+    );
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    let settle_pool = settle_pool_for(snap.total_principal, 500);
+
+    let p_large = client.compute_investor_payout(&large);
+    let p_tiny = client.compute_investor_payout(&tiny);
+
+    assert!(p_large + p_tiny <= settle_pool, "asymm: sum > settle_pool");
+    assert!(settle_pool - p_large - p_tiny >= 0);
+}
+
+/// Tiered mixed yield: 3 investors, each on a different yield tier.
+/// The aggregate payout must be ≤ per-investor weighted exact entitlements.
+#[test]
+fn payout_tiered_mixed_yield_conservation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let base_inv = Address::generate(&env);
+    let tier1_inv = Address::generate(&env);
+    let tier2_inv = Address::generate(&env);
+
+    // base=800bps, tier1=1000bps (lock≥60s), tier2=1500bps (lock≥120s)
+    let client = tiered_funded_and_settled_escrow(
+        &env,
+        "TIERMIX1",
+        800i64,
+        1_000i64,
+        1_500i64,
+        &[
+            (base_inv.clone(), 10_000i128, 0u64),
+            (tier1_inv.clone(), 10_000i128, 61u64),
+            (tier2_inv.clone(), 10_000i128, 121u64),
+        ],
+    );
+
+    let snap = client.get_funding_close_snapshot().unwrap();
+    let total_p = snap.total_principal; // 30_000
+
+    // Snapshot must be immutable across reads.
+    assert_eq!(
+        client.get_funding_close_snapshot().unwrap(),
+        snap,
+        "snapshot changed between reads"
+    );
+
+    let p_base = client.compute_investor_payout(&base_inv);
+    let p_t1 = client.compute_investor_payout(&tier1_inv);
+    let p_t2 = client.compute_investor_payout(&tier2_inv);
+
+    // Snapshot still unchanged after all payout reads.
+    assert_eq!(
+        client.get_funding_close_snapshot().unwrap(),
+        snap,
+        "snapshot mutated during payout reads"
+    );
+
+    let exact_base = exact_investor_payout(10_000, total_p, 800);
+    let exact_t1 = exact_investor_payout(10_000, total_p, 1_000);
+    let exact_t2 = exact_investor_payout(10_000, total_p, 1_500);
+
+    assert!(p_base <= exact_base, "base: payout > exact");
+    assert!(p_t1 <= exact_t1, "tier1: payout > exact");
+    assert!(p_t2 <= exact_t2, "tier2: payout > exact");
+    assert!(
+        p_base + p_t1 + p_t2 <= exact_base + exact_t1 + exact_t2,
+        "tiered mixed: aggregate payout exceeded exact sum"
+    );
+}
+
+/// Snapshot denominator consistency: read snapshot 5 times before and after
+/// all payout calls; it must never change.
+#[test]
+fn snapshot_denominator_consistent_across_all_payout_reads() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let investors: Vec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
+    let amounts = [7_777i128, 3_333i128, 11_111i128, 1i128, 99_998i128];
+    let pairs: Vec<(Address, i128)> = investors
+        .iter()
+        .cloned()
+        .zip(amounts.iter().cloned())
+        .collect();
+
+    let client = funded_and_settled_escrow(&env, "SNAPCONS", 800i64, &pairs);
+
+    let snap0 = client.get_funding_close_snapshot().unwrap();
+
+    for inv in &investors {
+        // Read snapshot, call compute_investor_payout, read snapshot again.
+        let snap_before = client.get_funding_close_snapshot().unwrap();
+        assert_eq!(snap0, snap_before, "snapshot changed before payout read");
+
+        let _ = client.compute_investor_payout(inv);
+
+        let snap_after = client.get_funding_close_snapshot().unwrap();
+        assert_eq!(snap0, snap_after, "snapshot changed after payout read");
     }
 }
