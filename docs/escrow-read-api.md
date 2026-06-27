@@ -633,83 +633,20 @@ Returns `true` when an investor's principal has been returned via `refund` in a 
 
 ---
 
-### `get_claimable_payout(investor: Address) → i128`
+## `get_yield_tiers() → Vec<YieldTier>`
 
-**Signature:** `pub fn get_claimable_payout(env: Env, investor: Address) → i128`
+**Storage key:** `DataKey::YieldTierTable`
 
-On-chain read-only view that returns the **claimable payout** for an investor, applying all gating rules that `claim_investor_payout` uses.
+Returns the yield-tier ladder configured at `init`, or an empty `Vec` when no tiers were configured (base yield applies to all investors).
 
-#### Comparison with `compute_investor_payout`
-- `compute_investor_payout` returns the **gross theoretical payout** (no gating applied).
-- This function returns the **net claimable amount** (0 if any gate blocks a claim).
+- **Immutable** — set once at `init`; the contract never mutates this key after initialization.
+- **Order** — returned order matches the validated non-decreasing ordering enforced at `init`: `min_lock_secs` strictly increasing, `yield_bps` non-decreasing.
+- **Empty vec** — returned for both "no tiers passed at init" and "legacy instance predating tier support"; callers must not treat an empty result as an error.
+- **Pure read** — no auth required, no state mutation.
 
-#### Return values
-| Condition | Returns |
-|-----------|---------|
-| Escrow is not yet settled (status != 2) | `0` |
-| Legal hold blocks investor claims | `0` |
-| Investor has already claimed their payout | `0` |
-| Current ledger timestamp is before the investor's claim-not-before time | `0` |
-| All gates passed | Gross payout from `compute_investor_payout` |
+### `YieldTier` fields
 
-#### Authorization
-None — pure read; no auth required, no state mutation.
-
----
-
-## `preview_fund(investor: Address, amount: i128) → u32`
-
-**Pure read-only preview** of a deposit call. Runs the same precondition checks as
-`fund()` in the exact same order, without requiring authorization or mutating state.
-
-### Return values
-
-| Code | Meaning |
-|------|---------|
-| `0`  | Deposit would be accepted by `fund()` |
-| `>0` | The numeric [`EscrowError`](escrow-error-messages.md) code that `fund()` would raise first |
-
-### Guard order (matches `fund_impl`)
-
-| Order | Check | Error code |
-|-------|-------|------------|
-| 1 | Amount is positive | `FundingAmountNotPositive` (100) |
-| 2 | Meets `min_contribution` floor (if configured) | `FundingBelowMinContribution` (101) |
-| 3 | Escrow is initialized (reads `DataKey::Escrow`) | — (panics if uninitialized, matching `fund`) |
-| 4 | No active legal hold | `LegalHoldBlocksFunding` (102) |
-| 5 | Escrow status is open (0) | `EscrowNotOpenForFunding` (103) |
-| 6 | Funding deadline not passed | `FundingDeadlinePassed` (164) |
-| 7 | Allowlist gate (if active): investor is allowlisted | `InvestorNotAllowlisted` (104) |
-| 8 | Investor contribution does not overflow | `InvestorContributionOverflow` (105) |
-| 9 | Per-investor cap not exceeded (if configured) | `InvestorContributionExceedsCap` (106) |
-| 10 | Unique-investor cap not reached (if configured, new investors only) | `UniqueInvestorCapReached` (107) |
-| 11 | Total funded-amount does not overflow | `FundedAmountOverflow` (110) |
-
-### Advisory
-
-This is a **read-only preview**. The actual `fund()` call is the source of truth
-and may still revert due to racing state changes (e.g. another transaction fills
-the unique-investor cap or the admin closes funding between the preview and the
-subsequent `fund()` call).
-
-### Security
-
-- **No `require_auth`** — the investor address is not required to sign.
-- **No storage writes** — returns the first failing code without mutating state.
-- **Advisory only** — callers must still handle `fund()` reverting on race conditions.
-
----
-
-## Admin handover views
-
-### `get_pending_admin() → Option<Address>`
-
-**Storage key:** `DataKey::PendingAdmin`
-
-Returns the proposed successor admin waiting for `accept_admin`, or `None` when no handover is in progress.
-
-### `get_pending_admin_expiry() → Option<u64>`
-
-**Storage key:** `DataKey::PendingAdminExpiry`
-
-Returns the ledger timestamp after which `accept_admin` rejects with `AdminProposalExpired` (code 85). Acceptance is allowed while `ledger.timestamp() <= expiry` (inclusive). Absent when no proposal is active.
+| Field | Type | Description |
+|-------|------|-------------|
+| `min_lock_secs` | `u64` | Minimum `committed_lock_secs` an investor must pass to qualify for this tier |
+| `yield_bps` | `i64` | Effective annualized yield in basis points for qualifying investors |

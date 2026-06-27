@@ -63,33 +63,11 @@ The state-machine rules above are verified in `escrow/src/tests/funding.rs`:
 | `test_effective_yield_bps_zero_base_yield` | `get_effective_yield_bps` resolves to `0` when base yield is `0` |
 | `test_effective_yield_bps_matches_payout_resolution` | `get_effective_yield_bps` matches the yield `compute_investor_payout` applies |
 
+## Read API
 
-## `preview_yield_tier` read view (addendum)
+The tier table is readable after `init` via `get_yield_tiers() -> Vec<YieldTier>`.
 
-`preview_yield_tier(amount: i128, lock: u64) -> (i64, u64)` is a pure read that exposes the
-tier-selection rule to prospective investors without requiring an actual deposit. It delegates
-directly to the internal `effective_yield_for_commitment` helper so the preview is guaranteed to
-agree with `fund_with_commitment`.
-
-The `amount` parameter mirrors `fund_with_commitment`'s signature for API parity. In the current
-release, tier selection is lock-only; `amount` is accepted but not used in the selection rule.
-
-| Scenario | Returns |
-|---|---|
-| No tier table, any lock | `(base_yield_bps, 0)` |
-| `lock == 0`, tier table present | `(base_yield_bps, 0)` |
-| `lock` below every tier threshold | `(base_yield_bps, 0)` |
-| `lock >= tier.min_lock_secs` | `(tier.yield_bps, tier.min_lock_secs)` for the highest qualifying tier |
-
-Additional test coverage in `escrow/src/tests/funding.rs`:
-
-| Test | Rule verified |
-|---|---|
-| `test_preview_yield_tier_no_tier_table_returns_base` | No table → base yield |
-| `test_preview_yield_tier_zero_lock_returns_base` | `lock=0` → base yield |
-| `test_preview_yield_tier_below_first_tier_returns_base` | Below threshold → base yield |
-| `test_preview_yield_tier_exact_boundary_matches_tier` | `lock == min_lock_secs` → tier matched |
-| `test_preview_yield_tier_top_tier_selected` | Highest qualifying tier wins |
-| `test_preview_yield_tier_mid_tier_selected` | Mid-range lock selects correct tier |
-| `test_preview_yield_tier_matches_fund_with_commitment` | Preview agrees with actual `fund_with_commitment` yield |
-| `test_preview_yield_tier_empty_tier_table_returns_base` | Empty table → base yield |
+- Returns an empty `Vec` when no tiers were configured.
+- Returned order matches the validated non-decreasing ordering enforced at `init`.
+- Pure read — no auth required, no state mutation.
+- See `docs/escrow-read-api.md` for the full getter reference.

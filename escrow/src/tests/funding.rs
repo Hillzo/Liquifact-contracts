@@ -4424,137 +4424,161 @@ fn test_update_funding_target_no_funds_no_promotion() {
     assert_eq!(client.get_funding_close_snapshot(), None);
 }
 
-// --- preview_yield_tier ---
+// ── Issue #345: get_yield_tiers read view ────────────────────────────────────
 
-/// Helper: init an escrow with the given tiers (or None) and return the client.
-fn deploy_with_tiers(
-    env: &Env,
-    base_yield: i64,
-    tiers: Option<soroban_sdk::Vec<YieldTier>>,
-) -> crate::LiquifactEscrowClient<'_> {
-    let client = deploy(env);
-    let admin = Address::generate(env);
-    let sme = Address::generate(env);
-    let (tok, tre) = free_addresses(env);
+#[test]
+fn test_get_yield_tiers_returns_empty_when_no_tiers_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
     client.init(
         &admin,
-        &soroban_sdk::String::from_str(env, "PYT001"),
+        &soroban_sdk::String::from_str(&env, "NOTIER01"),
         &sme,
         &100_000i128,
-        &base_yield,
+        &800i64,
         &0u64,
         &tok,
         &None,
         &tre,
-        &tiers,
+        &None,
         &None,
         &None,
         &None,
         &None,
         &None,
     );
-    client
+
+    let tiers = client.get_yield_tiers();
+    assert_eq!(tiers.len(), 0, "expected empty vec when no tiers configured");
 }
 
 #[test]
-fn test_preview_yield_tier_no_tier_table_returns_base() {
-    // When no tier table is configured, any lock returns base yield with lock=0.
+fn test_get_yield_tiers_returns_single_tier() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = deploy_with_tiers(&env, 800, None);
-    assert_eq!(client.preview_yield_tier(&1_000i128, &0u64), (800, 0));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &9999u64), (800, 0));
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 2_592_000,
+        yield_bps: 900,
+    });
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "SINGLE01"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let result = client.get_yield_tiers();
+    assert_eq!(result.len(), 1);
+    let t = result.get(0).unwrap();
+    assert_eq!(t.min_lock_secs, 2_592_000);
+    assert_eq!(t.yield_bps, 900);
 }
 
 #[test]
-fn test_preview_yield_tier_zero_lock_returns_base() {
-    // lock=0 always returns base regardless of tier table presence.
+fn test_get_yield_tiers_preserves_order() {
     let env = Env::default();
     env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier { min_lock_secs: 2_592_000,  yield_bps: 900   });
+    tiers.push_back(YieldTier { min_lock_secs: 7_776_000,  yield_bps: 1_100 });
+    tiers.push_back(YieldTier { min_lock_secs: 15_552_000, yield_bps: 1_400 });
+
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "MULTI01"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    let result = client.get_yield_tiers();
+    assert_eq!(result.len(), 3);
+
+    let t0 = result.get(0).unwrap();
+    assert_eq!(t0.min_lock_secs, 2_592_000);
+    assert_eq!(t0.yield_bps, 900);
+
+    let t1 = result.get(1).unwrap();
+    assert_eq!(t1.min_lock_secs, 7_776_000);
+    assert_eq!(t1.yield_bps, 1_100);
+
+    let t2 = result.get(2).unwrap();
+    assert_eq!(t2.min_lock_secs, 15_552_000);
+    assert_eq!(t2.yield_bps, 1_400);
+}
+
+#[test]
+fn test_get_yield_tiers_is_pure_read_no_state_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
     let mut tiers = SorobanVec::new(&env);
     tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
-    let client = deploy_with_tiers(&env, 800, Some(tiers));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &0u64), (800, 0));
-}
 
-#[test]
-fn test_preview_yield_tier_below_first_tier_returns_base() {
-    // lock < min threshold of every tier → base yield.
-    let env = Env::default();
-    env.mock_all_auths();
-    let mut tiers = SorobanVec::new(&env);
-    tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
-    let client = deploy_with_tiers(&env, 800, Some(tiers));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &99u64), (800, 0));
-}
+    client.init(
+        &admin,
+        &soroban_sdk::String::from_str(&env, "PURE01"),
+        &sme,
+        &100_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
 
-#[test]
-fn test_preview_yield_tier_exact_boundary_matches_tier() {
-    // lock == min_lock_secs of tier → that tier is selected.
-    let env = Env::default();
-    env.mock_all_auths();
-    let mut tiers = SorobanVec::new(&env);
-    tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
-    let client = deploy_with_tiers(&env, 800, Some(tiers));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &100u64), (900, 100));
-}
+    let escrow_before = client.get_escrow();
+    client.get_yield_tiers();
+    client.get_yield_tiers();
+    let escrow_after = client.get_escrow();
 
-#[test]
-fn test_preview_yield_tier_top_tier_selected() {
-    // Large lock picks highest-yield tier.
-    let env = Env::default();
-    env.mock_all_auths();
-    let mut tiers = SorobanVec::new(&env);
-    tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
-    tiers.push_back(YieldTier { min_lock_secs: 500, yield_bps: 1100 });
-    let client = deploy_with_tiers(&env, 800, Some(tiers));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &500u64), (1100, 500));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &9999u64), (1100, 500));
-}
-
-#[test]
-fn test_preview_yield_tier_mid_tier_selected() {
-    // lock between two tiers selects the lower qualifying tier.
-    let env = Env::default();
-    env.mock_all_auths();
-    let mut tiers = SorobanVec::new(&env);
-    tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
-    tiers.push_back(YieldTier { min_lock_secs: 500, yield_bps: 1100 });
-    let client = deploy_with_tiers(&env, 800, Some(tiers));
-    // lock=200: qualifies for tier1 (100) but not tier2 (500)
-    assert_eq!(client.preview_yield_tier(&1_000i128, &200u64), (900, 100));
-}
-
-#[test]
-fn test_preview_yield_tier_matches_fund_with_commitment() {
-    // Preview result must match the yield actually stored by fund_with_commitment.
-    let env = Env::default();
-    env.mock_all_auths();
-    let mut tiers = SorobanVec::new(&env);
-    tiers.push_back(YieldTier { min_lock_secs: 100, yield_bps: 900 });
-    tiers.push_back(YieldTier { min_lock_secs: 500, yield_bps: 1100 });
-    let client = deploy_with_tiers(&env, 800, Some(tiers));
-
-    for (lock, expected_yield) in [(50u64, 800i64), (100, 900), (300, 900), (500, 1100), (1000, 1100)] {
-        let (preview_yield, _lock_secs) = client.preview_yield_tier(&1_000i128, &lock);
-        assert_eq!(preview_yield, expected_yield, "lock={lock}");
-
-        // Verify against actual fund_with_commitment for each lock value.
-        let inv = Address::generate(&env);
-        client.fund_with_commitment(&inv, &1_000i128, &lock);
-        let actual_yield = client.get_investor_yield_bps(&inv);
-        assert_eq!(
-            preview_yield, actual_yield,
-            "preview disagrees with fund_with_commitment for lock={lock}"
-        );
-    }
-}
-
-#[test]
-fn test_preview_yield_tier_empty_tier_table_returns_base() {
-    // An explicitly empty tier table behaves like no table.
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = deploy_with_tiers(&env, 800, Some(SorobanVec::new(&env)));
-    assert_eq!(client.preview_yield_tier(&1_000i128, &9999u64), (800, 0));
+    assert_eq!(escrow_before, escrow_after, "get_yield_tiers must not mutate state");
 }
