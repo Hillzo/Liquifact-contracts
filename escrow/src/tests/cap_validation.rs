@@ -1077,7 +1077,7 @@ fn test_get_remaining_investor_slots_post_lower_cap() {
     assert_eq!(client.get_remaining_investor_slots(), Some(2));
 
     client.lower_max_unique_investors(&3u32);
-    
+
     assert_eq!(client.get_remaining_investor_slots(), Some(0));
 }
 
