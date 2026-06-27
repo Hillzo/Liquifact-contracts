@@ -174,6 +174,7 @@ fn escrow_error_discriminants_match_canonical_table() {
         (EscrowError::TierYieldBelowBase, 11),
         (EscrowError::TierLockNotIncreasing, 12),
         (EscrowError::TierYieldNotNonDecreasing, 13),
+        (EscrowError::AmountExceedsMax, 14),
         (EscrowError::EscrowNotInitialized, 20),
         (EscrowError::FundingTokenNotSet, 21),
         (EscrowError::TreasuryNotSet, 22),
@@ -245,8 +246,11 @@ fn escrow_error_discriminants_match_canonical_table() {
         (EscrowError::NewSmeSameAsCurrent, 162),
         (EscrowError::FundingDeadlinePassed, 164),
         (EscrowError::NoPendingAdmin, 163),
+        (EscrowError::FloorLowerNotOpen, 173),
+        (EscrowError::NewFloorNotLower, 174),
+        (EscrowError::NewFloorNotPositive, 175),
     ];
-    assert_eq!(TABLE.len(), 84);
+    assert_eq!(TABLE.len(), 88);
     for (variant, code) in TABLE {
         assert_eq!(*variant as u32, *code, "discriminant drift for code {code}");
     }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    AdminProposalCancelled, AdminProposedEvent, EscrowCloseSnapshot, FundingTargetUpdated,
-    RegistryRefRebound,
+    AdminAcceptedEvent, AdminProposalCancelled, AdminProposedEvent, EscrowCloseSnapshot,
+    FundingTargetUpdated, RegistryRefRebound,
 };
 
 use soroban_sdk::Event;
@@ -385,6 +385,45 @@ fn test_accept_admin_by_wrong_address_panics() {
     client.accept_admin();
 }
 
+/// Verify that `accept_admin` emits `AdminAcceptedEvent` with the correct prior_admin,
+/// new_admin, and invoice_id, making the completed two-step handover unambiguous.
+#[test]
+fn test_accept_admin_event_carries_prior_and_new_admin() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, old_admin, sme) = setup(&env);
+    let new_admin = Address::generate(&env);
+    let contract_id = client.address.clone();
+    default_init(&client, &env, &old_admin, &sme);
+
+    client.propose_admin(&new_admin, &None);
+    client.accept_admin();
+
+    let events = env.events().all();
+    let last_event = events.events().last().unwrap().clone();
+    assert_eq!(
+        last_event,
+        AdminAcceptedEvent {
+            name: symbol_short!("adm_acc"),
+            invoice_id: client.get_escrow().invoice_id,
+            prior_admin: old_admin.clone(),
+            new_admin: new_admin.clone(),
+        }
+        .to_xdr(&env, &contract_id)
+    );
+    assert_eq!(
+        client.get_escrow().admin, new_admin,
+        "admin was not promoted after accept_admin"
+    );
+    assert_eq!(
+        client.get_pending_admin(),
+        None,
+        "pending admin was not cleared after accept_admin"
+    );
+}
+
 /// End-to-end handover lifecycle: propose, accept, old admin lockout, new admin authority
 #[test]
 fn test_admin_handover_lifecycle() {
@@ -406,12 +445,13 @@ fn test_admin_handover_lifecycle() {
     assert_eq!(updated.admin, new_admin.clone());
     assert_eq!(client.get_pending_admin(), None);
 
-    // Verify AdminTransferredEvent
+    // Verify AdminAcceptedEvent
     assert_eq!(
         env.events().all().events().last().unwrap().clone(),
-        crate::AdminTransferredEvent {
-            name: symbol_short!("admin"),
+        crate::AdminAcceptedEvent {
+            name: symbol_short!("adm_acc"),
             invoice_id: client.get_escrow().invoice_id,
+            prior_admin: old_admin.clone(),
             new_admin: new_admin.clone(),
         }
         .to_xdr(&env, &contract_id)
@@ -1793,6 +1833,7 @@ fn test_error_code_uniqueness() {
         EscrowError::TierYieldBelowBase as u32,
         EscrowError::TierLockNotIncreasing as u32,
         EscrowError::TierYieldNotNonDecreasing as u32,
+        EscrowError::AmountExceedsMax as u32,
         EscrowError::EscrowNotInitialized as u32,
         EscrowError::FundingTokenNotSet as u32,
         EscrowError::TreasuryNotSet as u32,
@@ -1865,6 +1906,9 @@ fn test_error_code_uniqueness() {
         EscrowError::NewSmeSameAsCurrent as u32,
         EscrowError::NoPendingAdmin as u32,
         EscrowError::InsufficientContractBalance as u32,
+        EscrowError::FloorLowerNotOpen as u32,
+        EscrowError::NewFloorNotLower as u32,
+        EscrowError::NewFloorNotPositive as u32,
     ];
     for code in codes.iter() {
         assert!(

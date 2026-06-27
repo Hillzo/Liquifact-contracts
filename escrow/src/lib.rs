@@ -241,6 +241,8 @@ pub enum EscrowError {
     TierYieldBelowBase = 11,
     /// [`LiquifactEscrow::init`] rejected tiers whose `min_lock_secs` are not strictly increasing.
     TierLockNotIncreasing = 12,
+    /// [`LiquifactEscrow::init`] rejected `amount` exceeding [`MAX_INVOICE_AMOUNT`].
+    AmountExceedsMax = 14,
     /// [`LiquifactEscrow::init`] rejected tiers whose `yield_bps` decrease across tiers.
     TierYieldNotNonDecreasing = 13,
 
@@ -425,6 +427,13 @@ pub enum EscrowError {
     PayoutZero = 170,
     /// `update_funding_deadline` was called on a non-open escrow (status != 0).
     FundingDeadlineUpdateNotOpen = 171,
+
+    /// [`LiquifactEscrow::lower_min_contribution_floor`] called while escrow is not open.
+    FloorLowerNotOpen = 173,
+    /// [`LiquifactEscrow::lower_min_contribution_floor`] did not strictly lower the floor.
+    NewFloorNotLower = 174,
+    /// [`LiquifactEscrow::lower_min_contribution_floor`] received a non-positive floor.
+    NewFloorNotPositive = 175,
 }
 
 #[inline(always)]
@@ -730,6 +739,16 @@ pub struct MaxUniqueInvestorsCapLowered {
 }
 
 #[contractevent]
+pub struct MinContributionFloorLowered {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub old_floor: i128,
+    pub new_floor: i128,
+}
+
+#[contractevent]
 pub struct EscrowFunded {
     #[topic]
     pub name: Symbol,
@@ -797,6 +816,16 @@ pub struct AdminTransferredEvent {
     pub name: Symbol,
     #[topic]
     pub invoice_id: Symbol,
+    pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct AdminAcceptedEvent {
+    #[topic]
+    pub name: Symbol,
+    #[topic]
+    pub invoice_id: Symbol,
+    pub prior_admin: Address,
     pub new_admin: Address,
 }
 
@@ -2712,6 +2741,45 @@ impl LiquifactEscrow {
         new_cap
     }
 
+    /// Lower the minimum contribution floor while the escrow is still open.
+    ///
+    /// This is admin-only and intentionally cannot raise the floor or set a non-positive
+    /// value. The new floor applies to all subsequent [`LiquifactEscrow::fund`] /
+    /// [`LiquifactEscrow::fund_with_commitment`] calls, including follow-on deposits from
+    /// existing investors.
+    ///
+    /// # Panics
+    /// - If the escrow is not open (status != 0).
+    /// - If `new_floor` is not strictly lower than the current floor.
+    /// - If `new_floor` is not positive.
+    pub fn lower_min_contribution_floor(env: Env, new_floor: i128) -> i128 {
+        let escrow = Self::load_escrow_require_admin(&env);
+
+        ensure(&env, escrow.status == 0, EscrowError::FloorLowerNotOpen);
+        ensure(&env, new_floor > 0, EscrowError::NewFloorNotPositive);
+
+        let old_floor: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinContributionFloor)
+            .unwrap_or(0);
+        ensure(&env, new_floor < old_floor, EscrowError::NewFloorNotLower);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinContributionFloor, &new_floor);
+
+        MinContributionFloorLowered {
+            name: symbol_short!("floor_lo"),
+            invoice_id: escrow.invoice_id.clone(),
+            old_floor,
+            new_floor,
+        }
+        .publish(&env);
+
+        new_floor
+    }
+
     /// Validate the stored schema version and apply a migration if one is implemented.
     ///
     /// # Behavior - **typed error on all current paths**
@@ -3698,6 +3766,7 @@ impl LiquifactEscrow {
         pending.require_auth();
 
         let mut escrow = Self::get_escrow(env.clone());
+        let prior_admin = escrow.admin.clone();
         escrow.admin = pending.clone();
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
@@ -3706,9 +3775,10 @@ impl LiquifactEscrow {
             .instance()
             .remove(&DataKey::PendingAdminExpiry);
 
-        AdminTransferredEvent {
-            name: symbol_short!("admin"),
+        AdminAcceptedEvent {
+            name: symbol_short!("adm_acc"),
             invoice_id: escrow.invoice_id.clone(),
+            prior_admin,
             new_admin: pending,
         }
         .publish(&env);
