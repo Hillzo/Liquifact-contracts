@@ -8,9 +8,10 @@
 )]
 #[allow(unused_imports)]
 use super::{
-    AttestationDigestRevoked, CollateralRecordedEvt, DataKey, EscrowError, EscrowFunded,
-    EscrowInitialized, FundingTargetUpdated, LiquifactEscrow, LiquifactEscrowClient,
-    MaxUniqueInvestorsCapLowered, YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
+    AttestationDigestAppended, AttestationDigestRevoked, AttestationDigestUnrevoked,
+    CollateralRecordedEvt, DataKey, EscrowError, EscrowFunded, EscrowInitialized,
+    FundingTargetUpdated, LiquifactEscrow, LiquifactEscrowClient, MaxUniqueInvestorsCapLowered,
+    PrimaryAttestationBound, YieldTier, MAX_ATTESTATION_APPEND_ENTRIES, MAX_DUST_SWEEP_AMOUNT,
     MAX_FUND_BATCH, SCHEMA_VERSION,
 };
 use soroban_sdk::{
@@ -45,6 +46,7 @@ pub(crate) fn assert_contract_error<T, E>(
 mod admin;
 mod attestations;
 mod cap_validation;
+#[rustfmt::skip]
 mod coverage;
 mod external_calls;
 mod external_calls_mocked;

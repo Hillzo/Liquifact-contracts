@@ -143,3 +143,66 @@ pub fn transfer_funding_token_with_balance_checks(
         EscrowError::RecipientBalanceDeltaMismatch,
     );
 }
+
+/// Transfer `amount` of `token_addr` from `investor` to `to` (typically this escrow contract),
+/// then verify SEP-41-style conservation: sender decreases and recipient increases by exactly
+/// `amount`.
+///
+/// This function performs strict balance-delta verification through atomic balance checks:
+/// 1. Records pre-transfer balances for both investor and contract
+/// 2. Executes transfer using [`MuxedAddress::from`] for Stellar compatibility
+/// 3. Records post-transfer balances and calculates exact deltas
+/// 4. Asserts mathematical equality: `sender_delta == recipient_delta == amount`
+///
+/// # Arguments
+///
+/// * `env` - The Soroban environment
+/// * `token_addr` - Address of the SEP-41 token contract
+/// * `investor` - Address transferring from (the investor)
+/// * `to` - Address receiving the tokens (usually this escrow contract)
+/// * `amount` - Amount to transfer (must be positive)
+///
+/// # Errors
+///
+/// Emits typed [`EscrowError`] codes if `amount` is not positive, investor balance is insufficient,
+/// balance deltas do not equal `amount`, or balance delta calculation underflows.
+pub fn transfer_funding_token_inbound_with_balance_checks(
+    env: &Env,
+    token_addr: &Address,
+    investor: &Address,
+    to: &Address,
+    amount: i128,
+) {
+    ensure(env, amount > 0, EscrowError::TransferAmountNotPositive);
+    let token = TokenClient::new(env, token_addr);
+    let investor_before = token.balance(investor);
+    let contract_before = token.balance(to);
+    ensure(
+        env,
+        investor_before >= amount,
+        EscrowError::InsufficientTokenBalanceBeforeTransfer,
+    );
+
+    token.transfer(investor, MuxedAddress::from(to.clone()), &amount);
+
+    let investor_after = token.balance(investor);
+    let contract_after = token.balance(to);
+
+    let spent = investor_before
+        .checked_sub(investor_after)
+        .unwrap_or_else(|| fail(env, EscrowError::SenderBalanceUnderflow));
+    let received = contract_after
+        .checked_sub(contract_before)
+        .unwrap_or_else(|| fail(env, EscrowError::RecipientBalanceUnderflow));
+
+    ensure(
+        env,
+        spent == amount,
+        EscrowError::SenderBalanceDeltaMismatch,
+    );
+    ensure(
+        env,
+        received == amount,
+        EscrowError::RecipientBalanceDeltaMismatch,
+    );
+}

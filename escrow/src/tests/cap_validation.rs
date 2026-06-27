@@ -983,3 +983,100 @@ fn test_lower_cap_emits_event() {
         .to_xdr(&env, &contract_id)]
     );
 }
+
+#[test]
+fn test_get_remaining_investor_slots() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    let client_no_cap = deploy(&env);
+    client_no_cap.init(
+        &admin,
+        &String::from_str(&env, "CAP_REM_1"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+    assert_eq!(client_no_cap.get_remaining_investor_slots(), None);
+
+    let client_cap = deploy(&env);
+    client_cap.init(
+        &admin,
+        &String::from_str(&env, "CAP_REM_2"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(3u32),
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    assert_eq!(client_cap.get_remaining_investor_slots(), Some(3));
+
+    client_cap.fund(&Address::generate(&env), &10_000_000_000i128);
+    assert_eq!(client_cap.get_remaining_investor_slots(), Some(2));
+
+    client_cap.fund(&Address::generate(&env), &10_000_000_000i128);
+    assert_eq!(client_cap.get_remaining_investor_slots(), Some(1));
+
+    client_cap.fund(&Address::generate(&env), &10_000_000_000i128);
+    assert_eq!(client_cap.get_remaining_investor_slots(), Some(0));
+}
+
+#[test]
+fn test_get_remaining_investor_slots_post_lower_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "CAP_REM_3"),
+        &sme,
+        &100_000_000_000i128,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &Some(5u32),
+        &None,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.fund(&Address::generate(&env), &10_000_000_000i128);
+    client.fund(&Address::generate(&env), &10_000_000_000i128);
+    client.fund(&Address::generate(&env), &10_000_000_000i128);
+
+    assert_eq!(client.get_remaining_investor_slots(), Some(2));
+
+    client.lower_max_unique_investors(&3u32);
+    
+    assert_eq!(client.get_remaining_investor_slots(), Some(0));
+}
